@@ -46,14 +46,17 @@ PROMPT="Read brief.md and personas.json, then do the mission until the final rep
 # Claude Code runs the agent's shell commands in its Linux sandbox (bubblewrap + socat, no network,
 # writes only under ai-testers/). The sandbox has its own network namespace, so adb cannot reach the
 # adb server on tcp:5037: for the agent's run the server listens on a unix socket in this folder,
-# and that one socket is the only one the sandbox lets commands connect to.
+# which the sandbox lets commands connect to.
 SOCK="$PWD/.adb.sock"
 adb kill-server >/dev/null 2>&1; rm -f "$SOCK"
 adb -L "localfilesystem:$SOCK" start-server >/dev/null 2>&1
 export ADB_SERVER_SOCKET="localfilesystem:$SOCK"
 adb wait-for-device; adb devices
 mkdir -p .tmp
-SANDBOX='{"sandbox":{"enabled":true,"failIfUnavailable":true,"network":{"allowUnixSockets":["'"$SOCK"'"]}}}'
+# The per-socket filter needs a nested user namespace that GitHub's runners refuse (apply-seccomp:
+# setgroups denied), so unix sockets are open in general; the workflow stops Docker first, so the
+# adb socket is the only service of note left. Network and file writes stay fenced.
+SANDBOX='{"sandbox":{"enabled":true,"failIfUnavailable":true,"network":{"allowAllUnixSockets":true}}}'
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
 RUNNER_TEMP="$PWD/.tmp" timeout -k 20 "$((MAX_MIN * 60))" claude -p "$PROMPT" \
   --model "$MODEL" --max-turns "${MAX_TURNS:-150}" --max-budget-usd "${MAX_USD:-3}" \
