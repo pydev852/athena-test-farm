@@ -486,7 +486,7 @@ adbx(["logcat", "-d", "-v", "epoch", "-b", "all"], 180, os.path.join(OUT, "logca
 with open(os.path.join(OUT, "logcat-full.txt"), errors="replace") as fi, open(os.path.join(OUT, "athena.txt"), "w") as fa, \
         open(os.path.join(OUT, "gcm-events.txt"), "w") as fg:
     for l in fi:
-        if re.search(r" [VDIWEF] Athena\s*:", l) or f" {PKG}" in l:
+        if re.search(r" [VDIWEF] (?:Athena|NetGuard\.JNI)\s*:", l) or f" {PKG}" in l:
             fa.write(l)
         if "gtalk_conn" in l:
             fg.write(l)

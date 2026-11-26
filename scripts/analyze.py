@@ -95,6 +95,9 @@ freeing = 0
 repl_t = []
 fix3_bad = []
 gt_ev = []  # (t, "conn"|"close") from the GmsCore event tags
+uid_resets = []  # FIX5: TCP connections reset per uid reset
+fix5_never = []  # FIX5: lines that must never appear
+conn_kinds = {}  # FIX5: [Conn] change kinds inside the window
 for l in lc:
     mm = re.match(r"^\s*(\d+\.\d+)\s+(\d+)\s+(\d+)\s+\w\s+(.*)$", l)
     if not mm:
@@ -121,14 +124,25 @@ for l in lc:
         keeps += 1
     if pid in owner_pids and "ConnectionStateManager: Underlying network" in msg and "->" in msg and "clearing" not in msg:
         unders.append(round(t - w0, 2))
-    if "Athena" in msg and ("Clearing all active sessions due to network change" in msg or "Clearing sessions opened more than" in msg):
+    # main: "Clearing all active sessions due to network change"; FIX5: native "Cleared all sessions on the event thread"
+    if ("Athena" in msg and ("Clearing all active sessions due to network change" in msg or "Clearing sessions opened more than" in msg)) \
+            or "Cleared all sessions on the event thread" in msg:
         if pid in owner_pids:
             clears["owner"] += 1; clear_ts.append(round(t - w0, 2))
         else:
             clears["other"] += 1
-    mr = re.search(r"Clearing (?:all active sessions|sessions opened more than \S+ ms ago), reset (\d+) TCP", msg)
+    mr = re.search(r"(?:Clearing (?:all active sessions|sessions opened more than \S+ ms ago)|Cleared all sessions on the event thread:), reset (\d+) TCP", msg)
     if mr and pid in owner_pids:
         reset_tcp.append(int(mr.group(1)))
+    mu = re.search(r"Reset (\d+) TCP connections of uids blocked on the new network", msg)
+    if mu and pid in owner_pids:
+        uid_resets.append(int(mu.group(1)))
+    if pid in owner_pids and re.search(r"stopSelf after clear|Failed to lock mutex for (?:clearing|resetting) sessions|wake-up error|"
+                                         r"Cannot register the default network callback|Could not set the VPN's underlying network|ignoring VPN network", msg):
+        fix5_never.append(l[:200])
+    mk = re.search(r"\[Conn\] on(Available|Lost) .*kind=(\w+)", msg)
+    if mk and pid in owner_pids and t >= w0 - 0.5:
+        conn_kinds[mk.group(2)] = conn_kinds.get(mk.group(2), 0) + 1
     if re.search(r"FATAL|Fatal signal|has died|Process com\.kin\.athena[^ ]* .*died|ANR in com\.kin|am_proc_died.*com\.kin|am_crash.*com\.kin|Unhandled action|No action specified", msg) and "com.kin" in msg + l:
         crash.append(l[:200])
 
@@ -221,7 +235,13 @@ for l in lc:
     if "Athena" in msg and "[Pkt]" not in msg and "Setup failed" not in msg:  # Setup failed = billing retries (no account)
         mc = re.search(r"\] \[(\w+)\]", msg)
         ath_ev.append((t, "comp:" + (mc.group(1) if mc else "plain")))
-    if "Clearing all active sessions due to network change" in msg or "Clearing sessions opened more than" in msg:
+    mk = re.search(r"\[Conn\] on(?:Available|Lost) .*kind=(\w+)", msg)
+    if mk:
+        ath_ev.append((t, "kind:" + mk.group(1)))
+    if re.search(r"Reset \d+ TCP connections of uids blocked on the new network", msg):
+        ath_ev.append((t, "uidreset"))
+    if "Clearing all active sessions due to network change" in msg or "Clearing sessions opened more than" in msg \
+            or "Cleared all sessions on the event thread" in msg:
         ath_ev.append((t, "clear"))
     elif "Replacing VPN interface" in msg:
         ath_ev.append((t, "replacing"))
@@ -252,6 +272,12 @@ for i, e in enumerate(ev):
             if x.startswith("comp:") and ta - 0.5 <= t < nxt:
                 cc[x[5:]] = cc.get(x[5:], 0) + 1
         row["athena_lines"] = cc
+        row["athena_uidreset"] = sum(1 for t, x in ath_ev if x == "uidreset" and ta - 0.5 <= t < nxt)
+        kk = {}
+        for t, x in ath_ev:
+            if x.startswith("kind:") and ta - 0.5 <= t < nxt:
+                kk[x[5:]] = kk.get(x[5:], 0) + 1
+        row["conn_kinds"] = kk
         row["gcm_conn_after_s"] = next((round(t - ta, 1) for t, x in gt_ev if x == "conn" and ta < t < nxt), None)
         row["gcm_close"] = sum(1 for t, x in gt_ev if x == "close" and ta - 0.5 <= t < nxt)
         row["mq_closes"] = [w for t, w in mqc if ta - 0.5 <= t < nxt]
@@ -271,7 +297,7 @@ summ = {
     "probe_ip": probes("probe.txt", "PROBE"), "probe_dns": probes("dns.txt", "DNSPROBE"),
     "gcm_ev_per_action": ev_per_act, "gcm_ev_after_wifi_default": wd_per, "gcm_after_replacement": repl_gcm, "gcm_ev_down_s": round(ev_down, 1), "gcm_ev_conns": sum(1 for t, e in gt_ev if e == "conn" and t >= w0),
     "fix3_freeing": freeing, "fix3_bad": fix3_bad[:10], "nvpn_multi_samples": nvpn_multi, "nvpn_end": nvpn_end,
-    "per_switch": per_switch, "vpn_none_samples": vpn_none, "max_vpn_agents": max_nvpn, "vpn_owners": owners, "vpn_transports": vpn_transports, "pids": pids, "crash_lines": crash[:20],
+    "per_switch": per_switch, "uid_resets": uid_resets, "fix5_never": fix5_never[:20], "conn_kinds": conn_kinds, "vpn_none_samples": vpn_none, "max_vpn_agents": max_nvpn, "vpn_owners": owners, "vpn_transports": vpn_transports, "pids": pids, "crash_lines": crash[:20],
 }
 json.dump(summ, open(os.path.join(R, "summary.json"), "w"), indent=1)
 pa = ",".join(str(x["gcm_reconnect_s"]) for x in per_act)
