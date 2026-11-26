@@ -5,7 +5,8 @@ usage: run.py --apk <file> --build <name> --pattern a|b|c --run <n> --out <dir>
 
 Steps: prep device -> install APK (-g) -> wait for GmsCore's GCM (mtalk) connection -> start Athena's VPN through
 the UI (focus-gated taps, uiautomator) -> verify the VPN network is owned by the app uid -> workloads (MQTT
-subscription to test.mosquitto.org with a host-side publisher, IP + DNS probes, sampler) -> flap pattern ->
+subscription to a local mosquitto on the runner with a host-side publisher, IP + DNS probes, sampler; run as an
+app uid via su when the image allows it, else as the shell uid, which Android 14+ socket kills skip) -> flap pattern ->
 collect logcat/dumpsys -> analyze.py -> summary.json.
 
 Patterns (mobile data on, mobile_data_always_on=1, Wi-Fi = emulator "AndroidWifi"):
@@ -26,7 +27,10 @@ ap.add_argument("--pattern", required=True, choices=["a", "b", "c"])
 ap.add_argument("--run", default="1")
 ap.add_argument("--out", required=True)
 ap.add_argument("--gcm-wait", type=int, default=300)
-ap.add_argument("--broker", default="test.mosquitto.org")
+ap.add_argument("--broker", default="203.0.113.1", help="MQTT broker IP (default: local mosquitto on the runner, lo alias)")
+ap.add_argument("--probe", default="203.0.113.1:8080", help="ip:port of an HTTP server for the fresh-TCP probe")
+ap.add_argument("--client-pkg", default="com.android.chrome,com.google.android.youtube,com.google.android.apps.maps,com.android.vending",
+                help="run the measurement clients as the uid of the first installed package (su); falls back to the shell uid")
 A = ap.parse_args()
 
 OUT = os.path.abspath(A.out)
@@ -146,6 +150,13 @@ def focus():
     return adb("dumpsys window 2>/dev/null | grep -m1 mCurrentFocus")
 
 
+def dismiss_anr():
+    x = adb("uiautomator dump /sdcard/ui.xml >/dev/null 2>&1; cat /sdcard/ui.xml", 30)
+    if "isn't responding" in x:
+        m = re.search(r'text="Wait"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', x)
+        if m:
+            a = [int(v) for v in m.groups()]; adb(f"input tap {(a[0] + a[2]) // 2} {(a[1] + a[3]) // 2}"); log("TAP Wait on an ANR dialog")
+
 def uidump(i):
     adb("uiautomator dump /sdcard/ui.xml >/dev/null 2>&1", 30)
     x = adb("cat /sdcard/ui.xml", 30)
@@ -197,7 +208,10 @@ def start_vpn(pkg, uid):
             return True
         nodes = uidump(i)
         log(f"UI {i} focus={f} vpn={up} texts={[n.get('text') or n.get('content-desc') for n in nodes if n.get('text') or n.get('content-desc')][:25]}")
-        if "com.android.vpndialogs" in f:
+        anr, _ = find(nodes, ["Wait"])
+        if anr and any("isn't responding" in n.get("text", "") for n in nodes):
+            x1, y1, x2, y2 = anr["b"]; adb(f"input tap {(x1 + x2) // 2} {(y1 + y2) // 2}"); log("TAP Wait on an ANR dialog")
+        elif "com.android.vpndialogs" in f:
             n, t = find(nodes, ["OK", "Allow"])
             if n: tap("com.android.vpndialogs", n, "vpn-consent " + t)
         elif "GrantPermissions" in f or "permissioncontroller" in f:
@@ -237,8 +251,12 @@ INFO["device"]["gms"] = adb("dumpsys package com.google.android.gms | grep -m1 v
 INFO["device"]["nproc"] = adb("nproc")
 for c in ("settings put system screen_off_timeout 2147483647", "svc power stayon true", "locksettings set-disabled true",
           "input keyevent KEYCODE_WAKEUP", "wm dismiss-keyguard", "settings put global mobile_data_always_on 1",
-          "svc data enable", "svc wifi enable"):
+          "svc data enable", "svc wifi enable", "logcat -G 16M"):
     adb(c)
+ROOT = adb("su 0 id").startswith("uid=0")
+INFO["su"] = ROOT
+time.sleep(5)
+dismiss_anr()
 snap("connectivity-boot", "dumpsys connectivity")
 snap("wifi-boot", "cmd wifi status")
 snap("ifaces-boot", "ip addr; ip rule; getprop | grep -iE 'gsm|radio' | head -30")
@@ -255,6 +273,15 @@ PKG, UID = mm[0]
 INFO["pkg"], INFO["uid"] = PKG, UID
 gu = re.search(r"uid:(\d+)", adb("pm list packages -U com.google.android.gms | grep -m1 'gms uid'"))
 GMS_UID = gu.group(1) if gu else "0"
+CLIENT = ("shell", "2000")
+if ROOT:
+    for cp in A.client_pkg.split(","):
+        cu = re.search(r"uid:(\d+)", adb(f"pm list packages -U {cp} | grep -m1 'package:{cp} '"))
+        if cu and adb(f"su {cu.group(1)} id").startswith(f"uid={cu.group(1)}"):
+            CLIENT = (cp, cu.group(1)); break
+INFO["client"] = {"pkg": CLIENT[0], "uid": CLIENT[1],
+                  "note": "app uid via su" if CLIENT[0] != "shell" else "shell uid 2000: NOT representative on Android 14+ (socket kill skips it)"}
+log(f"client {INFO['client']}")
 adb(f"appops set {PKG} ACTIVATE_VPN allow")
 adb(f"dumpsys deviceidle whitelist +{PKG}")
 adb(f"pm grant {PKG} android.permission.POST_NOTIFICATIONS")
@@ -268,11 +295,12 @@ mark("gcm_connected" if ok else "gcm_timeout")
 log(f"GCM before VPN: {ok} {st}")
 
 # ---- VPN ----
+dismiss_anr()
 vok = start_vpn(PKG, UID)
 mark("vpn_up" if vok else "vpn_fail")
 snap("connectivity-vpn", "dumpsys connectivity")
 if not vok:
-    adbx(["logcat", "-d", "-v", "epoch", "-b", "main,system,crash,events"], 120, os.path.join(OUT, "logcat-all.txt"))
+    adbx(["logcat", "-d", "-v", "epoch", "-b", "all"], 180, os.path.join(OUT, "logcat-full.txt"))
     finish("fail: vpn not started")
 d, nets = netstate()
 INFO["vpn_net"] = {k: n for k, n in nets.items() if "VPN" in n["tr"]}
@@ -282,15 +310,15 @@ INFO["gcm_after_vpn"] = st2
 mark("gcm_after_vpn" if ok2 else "gcm_after_vpn_timeout")
 
 # ---- workloads ----
-adb(f"mkdir -p {D}")
+adb(f"mkdir -p {D} && chmod 777 {D}")
 for f in ("mqflap", "samp.sh", "dnsprobe.sh"):
     log(f"push {f}: {adbx(['push', os.path.join(HERE, f), f'{D}/{f}'], 60)}")
 adb(f"chmod 755 {D}/mqflap {D}/samp.sh {D}/dnsprobe.sh")
-try:
-    BROKER = socket.gethostbyname(A.broker)
-except Exception:
-    BROKER = "54.36.178.49"
-INFO["broker_ip"] = BROKER
+BROKER = socket.gethostbyname(A.broker)
+PIP, PPORT = A.probe.split(":")
+INFO["broker_ip"], INFO["probe_target"] = BROKER, A.probe
+RUNAS = f"su {CLIENT[1]} " if CLIENT[0] != "shell" else ""
+CAT = "su 0 cat" if ROOT else "cat"
 tag = f"{A.build}-{A.pattern}{A.run}-api{INFO['api'] or INFO['device']['sdk']}"
 DUR = {"a": 260, "b": 520, "c": 330}[A.pattern]
 adb(f"cd {D} && rm -f stop *.{tag}")
@@ -300,6 +328,7 @@ time.sleep(3)
 
 def last_samp():
     return adb(f"tail -n1 {D}/samp.{tag} 2>/dev/null")
+
 
 
 def parse(l):
@@ -349,9 +378,9 @@ lc = subprocess.Popen(["adb", "logcat", "-v", "epoch", "-b", "main,system,crash,
 topic = f"athfarm/{INFO['gh_run'] or 'local'}/{tag}"
 pub = subprocess.Popen([sys.executable, "-I", os.path.join(HERE, "pub.py"), BROKER, topic, "5", str(DUR + 30)],
                        stdout=open(os.path.join(OUT, "pub.log"), "w"), stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
-adb(f"cd {D} && (setsid ./mqflap mq {BROKER} 1883 {topic} {tag} 30 {DUR} > mq.{tag} 2>&1 </dev/null &)"
-    f" && (setsid ./mqflap probe 1.1.1.1 80 1.1.1.1 {tag} 2000 {DUR} > probe.{tag} 2>&1 </dev/null &)"
-    f" && (setsid sh dnsprobe.sh dns.{tag} {DUR} >/dev/null 2>&1 </dev/null &)")
+adb(f"cd {D} && (setsid {RUNAS}{D}/mqflap mq {BROKER} 1883 {topic} {tag} 30 {DUR} > mq.{tag} 2>&1 </dev/null &)"
+    f" && (setsid {RUNAS}{D}/mqflap probe {PIP} {PPORT} {PIP} {tag} 2000 {DUR} > probe.{tag} 2>&1 </dev/null &)"
+    f" && (setsid {RUNAS}sh {D}/dnsprobe.sh dns.{tag} {DUR} >/dev/null 2>&1 </dev/null &)")
 time.sleep(20)
 log(f"WARM mq=[{adb(f'grep -cE READY {D}/mq.{tag}')} READY, {adb(f'grep -c RXPUSH {D}/mq.{tag}')} RX] {last_samp()}")
 mark("workloads_up")
@@ -392,9 +421,17 @@ snap("athena-services", f"dumpsys activity services {PKG} | grep -E 'ServiceReco
 snap("gcm-end", "dumpsys activity service com.google.android.gms/.gcm.GcmService | head -80")
 adb(f"touch {D}/stop"); time.sleep(4)
 for k in ("samp", "mq", "probe", "dns"):
-    open(os.path.join(OUT, f"{k}.txt"), "w").write(adb(f"cat {D}/{k}.{tag}", 60) + "\n")
-adb(f"rm -f {D}/*.{tag} {D}/stop; pkill -f mqflap")
+    open(os.path.join(OUT, f"{k}.txt"), "w").write(adb(f"{CAT} {D}/{k}.{tag}", 60) + "\n")
+adb(f"rm -f {D}/*.{tag} {D}/stop; pkill -f mqflap" + ("; su 0 pkill -f mqflap" if ROOT else ""))
 lc.terminate(); pub.terminate()
+adbx(["logcat", "-d", "-v", "epoch", "-b", "all"], 180, os.path.join(OUT, "logcat-full.txt"))
+with open(os.path.join(OUT, "logcat-full.txt"), errors="replace") as fi, open(os.path.join(OUT, "athena.txt"), "w") as fa, \
+        open(os.path.join(OUT, "gcm-events.txt"), "w") as fg:
+    for l in fi:
+        if re.search(r" [VDIWEF] Athena\s*:", l) or f" {PKG}" in l:
+            fa.write(l)
+        if "gtalk_conn" in l:
+            fg.write(l)
 if A.pattern == "c":
     adb("svc wifi enable")
 meta["events"] = EV; meta["end_battery"] = 100

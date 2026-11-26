@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       apk_tag:
-        description: "Release tag(s) holding the APK to test, comma-separated (one matrix axis), e.g. fix3-pilot,old-180"
-        default: "fix3-pilot"
+        description: "Release tag(s) holding the APK to test, comma-separated (one matrix axis), e.g. mainlog-d7a54c9,old-180"
+        default: "mainlog-d7a54c9"
       api_levels:
         description: "JSON list of emulator API levels (google_apis x86_64)"
         default: "[34, 36]"
@@ -67,6 +67,16 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm; nproc; free -g; df -h / | tail -1
 
+      - name: Local test services (MQTT broker, HTTP probe target)
+        # The emulator reaches host sockets through SLIRP. A TEST-NET address on the host lo keeps the traffic on a
+        # public-looking IP (Athena's allowLocal would bypass private ranges such as 10.0.2.2), and nothing leaves the runner.
+        run: |
+          sudo ip addr add 203.0.113.1/32 dev lo
+          docker run -d --name mqtt -p 1883:1883 eclipse-mosquitto:2.0.20 mosquitto -c /mosquitto-no-auth.conf
+          nohup python3 -m http.server 8080 --bind 203.0.113.1 --directory "$RUNNER_TEMP" > "$RUNNER_TEMP/http.log" 2>&1 &
+          for i in $(seq 1 20); do (exec 3<>/dev/tcp/203.0.113.1/1883) 2>/dev/null && break; sleep 1; done
+          curl -sI http://203.0.113.1:8080/ | head -1
+
       - name: Prepare APK and device tools
         env:
           GH_TOKEN: ${{ github.token }}
@@ -92,7 +102,7 @@ jobs:
           emulator-boot-timeout: 900
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           disable-animations: true
-          script: python3 -I scripts/run.py --apk apk/app.apk --build ${{ matrix.tag }} --pattern ${{ matrix.pattern }} --run ${{ matrix.run }} --gcm-wait ${{ inputs.gcm_wait }} --out ${{ env.OUT }}
+          script: python3 -I scripts/run.py --apk apk/app.apk --build ${{ matrix.tag }} --pattern ${{ matrix.pattern }} --run ${{ matrix.run }} --gcm-wait ${{ inputs.gcm_wait }} --broker 203.0.113.1 --probe 203.0.113.1:8080 --out ${{ env.OUT }}
 
       - name: Upload results
         if: always()
