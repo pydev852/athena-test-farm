@@ -409,6 +409,15 @@ def act(cmd):
 
 
 ok, _ = wait_default("WIFI", 90)
+# precondition: a validated cellular network must exist, or Wi-Fi off leaves no network at all (seen once on API 35)
+for i in range(90):
+    if re.search(r"cell=\d+:V:", last_samp()):
+        break
+    if i in (20, 50):
+        log("no validated cellular network yet: svc data disable/enable"); adb("svc data disable; sleep 2; svc data enable")
+    time.sleep(1)
+else:
+    adb(f"touch {D}/stop"); finish("fail: no validated cellular network before the pattern")
 if not ok:
     adb(f"touch {D}/stop"); finish("fail: Wi-Fi not default before the pattern")
 f = parse(last_samp())
