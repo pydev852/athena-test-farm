@@ -43,3 +43,17 @@ To test another build, upload its APK as a release asset (one APK per release) a
 - `scripts/pub.py`: host-side MQTT publisher
 - `scripts/analyze.py`, `scripts/merge.py`: per-job summary and the merged table
 
+
+## AI exploratory testers (`ai-testers.yml`)
+
+Adapted from [mobile-agent-testers](https://github.com/pierridotite/mobile-agent-testers) (MIT, see
+`ai-testers/LICENSE-mobile-agent-testers`). One emulator per persona (`ai-testers/personas.json`), each driven by a headless
+Claude Code agent that follows `ai-testers/brief.md`. The agent step is the only one with the `ANTHROPIC_API_KEY` secret; the
+agent may only use adb and the screenshot/typing helpers, with a turn, dollar and time limit. Screenshots, reports, logcat
+and transcripts are encrypted with `ai-testers/results_public.pem` before upload; only a status line (turns, cost, tokens) is
+public.
+
+```sh
+gh workflow run ai-testers.yml -R pydev852/athena-test-farm -f personas=emma,jozef -f max_minutes=20
+bash ai-testers/scripts/collect.sh <run_id> <private_key.pem> <out_dir>
+```

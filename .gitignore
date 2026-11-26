@@ -1,3 +1,6 @@
 scripts/mqflap
 out/
 apk/
+ai-testers/results/
+ai-testers/results.enc/
+*.pem.private

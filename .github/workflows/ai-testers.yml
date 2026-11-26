@@ -1,0 +1,158 @@
+# AI exploratory testers for Athena, adapted from mobile-agent-testers
+# (https://github.com/pierridotite/mobile-agent-testers, MIT, see ai-testers/LICENSE-mobile-agent-testers).
+# One emulator per persona, each driven by a headless Claude Code agent. Everything the agents
+# produce (screenshots, reports, logcat, transcript) is encrypted with ai-testers/results_public.pem
+# before upload, because the logs and artifacts of a public repo are public. Only a status line
+# (turns, cost, tokens) is printed. Decrypt locally with ai-testers/scripts/collect.sh.
+name: ai-testers
+
+on:
+  workflow_dispatch:
+    inputs:
+      apk_tag:
+        description: Release tag of this repo holding the Athena APK
+        default: mainlog-d7a54c9
+      personas:
+        description: Persona ids from ai-testers/personas.json, comma-separated, or all
+        default: emma
+      model:
+        description: Claude model id
+        default: claude-sonnet-5-5
+      max_minutes:
+        description: Hard time limit per agent, minutes (5-30)
+        default: "20"
+      max_usd:
+        description: Hard spending limit per agent, USD (Claude Code --max-budget-usd)
+        default: "3"
+      max_turns:
+        description: Turn limit per agent
+        default: "150"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-testers
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      android: ${{ steps.m.outputs.android }}
+      step_timeout: ${{ steps.v.outputs.step_timeout }}
+      job_timeout: ${{ steps.v.outputs.job_timeout }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - id: v
+        name: Check inputs
+        env:
+          TAG: ${{ inputs.apk_tag }}
+          MODEL: ${{ inputs.model }}
+          MAXM: ${{ inputs.max_minutes }}
+          MAXUSD: ${{ inputs.max_usd }}
+          MAXT: ${{ inputs.max_turns }}
+        run: |
+          [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::bad apk_tag"; exit 1; }
+          [[ "$MODEL" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::bad model"; exit 1; }
+          [[ "$MAXM" =~ ^[0-9]+$ ]] && [ "$MAXM" -ge 5 ] && [ "$MAXM" -le 30 ] || { echo "::error::max_minutes must be 5-30"; exit 1; }
+          [[ "$MAXUSD" =~ ^[0-9]+(\.[0-9]+)?$ ]] && python3 -c "import sys; sys.exit(0 if 0 < float('$MAXUSD') <= 10 else 1)" || { echo "::error::max_usd must be in (0, 10]"; exit 1; }
+          [[ "$MAXT" =~ ^[0-9]+$ ]] && [ "$MAXT" -ge 10 ] && [ "$MAXT" -le 400 ] || { echo "::error::max_turns must be 10-400"; exit 1; }
+          test -s ai-testers/results_public.pem || { echo "::error::ai-testers/results_public.pem missing"; exit 1; }
+          echo "step_timeout=$((MAXM + 15))" >> "$GITHUB_OUTPUT"
+          echo "job_timeout=$((MAXM + 45))" >> "$GITHUB_OUTPUT"
+      - id: m
+        working-directory: ai-testers
+        env:
+          PERSONAS: ${{ inputs.personas }}
+          PLATFORM: android
+        run: python3 -I scripts/matrix.py | tee -a "$GITHUB_OUTPUT"
+
+  android:
+    needs: plan
+    if: needs.plan.outputs.android != '[]'
+    name: ${{ matrix.persona }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.job_timeout) }}
+    strategy:
+      fail-fast: false
+      max-parallel: 10   # at most 10 agents at once (model usage)
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.android) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+
+      - name: APK and tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.apk_tag }}
+        run: |
+          mkdir -p apk
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p '*.apk' -D apk
+          ls apk/*.apk | head -1 | xargs -I{} mv {} apk/app.apk
+          sha256sum apk/app.apk | tee -a "$GITHUB_STEP_SUMMARY"
+          AAPT2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
+          PKG=$("$AAPT2" dump packagename apk/app.apk | tr -d '\r')
+          echo "Package $PKG" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "APP_ID=$PKG" >> "$GITHUB_ENV"
+          python3 -m pip install -q pillow==11.3.0 2>/dev/null || python3 -m pip install -q --break-system-packages pillow==11.3.0
+          npm install -g --silent @anthropic-ai/claude-code@2.1.310
+          claude --version
+
+      - name: Device profile (fallback to pixel_6)
+        id: profile
+        env: { WANTED: "${{ matrix.profile }}" }
+        run: |
+          if "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" list device -c 2>/dev/null | grep -qx "$WANTED"; then echo "profile=$WANTED" >> "$GITHUB_OUTPUT"
+          else echo "profile=pixel_6" >> "$GITHUB_OUTPUT"; echo "Profile $WANTED missing, pixel_6 used" >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+
+      # The only step with the model API key.
+      - name: Emulator + agent
+        timeout-minutes: ${{ fromJSON(needs.plan.outputs.step_timeout) }}
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PERSONA: ${{ matrix.persona }}
+          DEVICE: ${{ matrix.device }}
+          API: ${{ matrix.api }}
+          FONT_SCALE: ${{ matrix.font_scale }}
+          THEME: ${{ matrix.theme }}
+          INCREASE_CONTRAST: ${{ matrix.increase_contrast }}
+          COLOR_FILTER: ${{ matrix.color_filter }}
+          LOCALE: ${{ matrix.locale }}
+          GEO: ${{ matrix.geo }}
+          MODEL: ${{ inputs.model }}
+          MAX_MINUTES: ${{ inputs.max_minutes }}
+          MAX_USD: ${{ inputs.max_usd }}
+          MAX_TURNS: ${{ inputs.max_turns }}
+        with:
+          api-level: ${{ matrix.api }}
+          target: google_apis
+          arch: x86_64
+          profile: ${{ steps.profile.outputs.profile }}
+          cores: 3
+          ram-size: 4096M
+          disk-size: 6G
+          emulator-boot-timeout: 900
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          working-directory: ai-testers
+          script: bash scripts/android/run_agent.sh
+
+      - name: Encrypt results
+        if: always()
+        working-directory: ai-testers
+        run: bash scripts/encrypt_results.sh "${{ matrix.persona }}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: results-${{ matrix.persona }}
+          path: ai-testers/results.enc/
+          retention-days: 14

@@ -1,0 +1,92 @@
+[
+  {
+    "id": "emma",
+    "platform": "android",
+    "profile": "Marketing assistant, 29, English, installs a firewall for the first time after reading that apps phone home. Reads onboarding text, but has no idea what a VPN or DNS is.",
+    "goal": "Turn the firewall on, block the internet for one app on Wi-Fi and on mobile data, and understand what the app did.",
+    "locale": "en-US",
+    "geo": [40.7128, -74.006],
+    "device": {"name": "Pixel 7, Android 14", "profile": "pixel_7", "android_api": 34, "font_scale": 1.0, "theme": "light"}
+  },
+  {
+    "id": "jozef",
+    "platform": "android",
+    "profile": "Accountant, 52, Slovak, phone set to Slovak. Reads English only a little. Careful, reads every dialog before tapping.",
+    "goal": "Understand what the app is for and block one app's mobile data. Note every screen that is not in Slovak or mixes languages.",
+    "locale": "sk-SK",
+    "geo": [48.1486, 17.1077],
+    "device": {"name": "Pixel 6, Android 14", "profile": "pixel_6", "android_api": 34, "font_scale": 1.15, "theme": "light"}
+  },
+  {
+    "id": "klaus",
+    "platform": "android",
+    "profile": "Engineer, 45, German, privacy-minded, notices awkward or cut-off German labels (long compound words).",
+    "goal": "Set up the firewall, turn on DNS blocking with a preset list, and check that the logs show what was blocked.",
+    "locale": "de-DE",
+    "geo": [52.52, 13.405],
+    "device": {"name": "Pixel 5, Android 12", "profile": "pixel_5", "android_api": 31, "font_scale": 1.0, "theme": "light"}
+  },
+  {
+    "id": "layla",
+    "platform": "android",
+    "profile": "Pharmacist, 39, reads Arabic, expects every screen to flow right to left.",
+    "goal": "Do the main task end to end (firewall on, block one app on Wi-Fi) and check that text, icons, toggles and arrows are mirrored.",
+    "locale": "ar-EG",
+    "geo": [30.0444, 31.2357],
+    "device": {"name": "Pixel 6, Android 13", "profile": "pixel_6", "android_api": 33, "font_scale": 1.15, "theme": "light"}
+  },
+  {
+    "id": "grace",
+    "platform": "android",
+    "profile": "Retired nurse, 74, low vision, uses Android's largest font size (200%) and high contrast text.",
+    "goal": "Read every screen and block one app without zooming. Report any text or toggle that is cut, overlaps or cannot be reached.",
+    "locale": "en-US",
+    "geo": [41.8781, -87.6298],
+    "device": {"name": "Pixel 7, Android 14, 200% font", "profile": "pixel_7", "android_api": 34, "font_scale": 2.0, "theme": "light", "increase_contrast": true}
+  },
+  {
+    "id": "sam",
+    "platform": "android",
+    "profile": "Student, 17, English, old small phone with a low-resolution screen, taps fast.",
+    "goal": "Get through setup and block one app on mobile data. Report anything that does not fit this small screen.",
+    "locale": "en-GB",
+    "geo": [51.5072, -0.1276],
+    "device": {"name": "Small phone (Nexus S size, 480x800), Android 11", "profile": "Nexus S", "android_api": 30, "font_scale": 1.0, "theme": "light"}
+  },
+  {
+    "id": "lucia",
+    "platform": "android",
+    "profile": "Teacher, 47, uses the family tablet, reads Spanish, wants to keep the kids' games off the internet.",
+    "goal": "Use the app on the big screen: block a few apps, try the search and the app details screen, and judge whether the layout uses the space.",
+    "locale": "es-ES",
+    "geo": [40.4168, -3.7038],
+    "device": {"name": "Pixel Tablet, Android 14", "profile": "pixel_tablet", "android_api": 34, "font_scale": 1.0, "theme": "light"}
+  },
+  {
+    "id": "malik",
+    "platform": "android",
+    "profile": "Student, 21, English, dark mode everywhere, skips every text, taps fast, changes the app's colors and styles.",
+    "goal": "Reach the firewall as fast as possible, then try the Colors & Styles settings and check dark mode contrast on every screen.",
+    "locale": "en-US",
+    "geo": [34.0522, -118.2437],
+    "device": {"name": "Pixel 8, Android 15, dark mode", "profile": "pixel_8", "android_api": 35, "font_scale": 1.0, "theme": "dark"}
+  },
+  {
+    "id": "ines",
+    "platform": "android",
+    "profile": "Accessibility consultant, 41, English, red-green color blind, uses a screen reader on and off. Judges whether every control has a spoken name and whether allowed/blocked state is shown by more than color.",
+    "goal": "Block and unblock one app on Wi-Fi and mobile data and check that the state of each toggle can be told without color and that every icon button has a name in the accessibility tree.",
+    "locale": "en-US",
+    "geo": [37.7749, -122.4194],
+    "device": {"name": "Pixel 6, Android 14", "profile": "pixel_6", "android_api": 34, "font_scale": 1.3, "theme": "light", "increase_contrast": true, "color_filter": "deuteranopia"}
+  },
+  {
+    "id": "viktor",
+    "platform": "android",
+    "profile": "Sysadmin, 35, English, power user who has used NetGuard and AFWall+. Tests edge cases and checks that rules really apply.",
+    "goal": "Test the firewall rules: block an app on Wi-Fi only, then mobile data only, switch networks and verify each rule, try block-by-default settings, system apps, search, logs and DNS blocking.",
+    "locale": "en-US",
+    "geo": [50.0755, 14.4378],
+    "device": {"name": "Pixel 7, Android 16", "profile": "pixel_7", "android_api": 36, "font_scale": 1.0, "theme": "dark"}
+  }
+]
