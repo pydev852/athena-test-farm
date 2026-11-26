@@ -59,6 +59,11 @@ The emulator has both Wi-Fi ("AndroidWifi") and simulated mobile data. Wi-Fi is 
 - To check whether an app really has internet, open a page in a browser if one is installed
   (`adb shell am start -a android.intent.action.VIEW -d http://example.com`) and look at the
   result, then check Athena's Logs screen for allowed/blocked entries of that app.
+- This emulator has few user apps: the browser (Chrome) and most apps are system apps. If the
+  app list looks nearly empty, first try to find out yourself how to see more apps (report it if
+  that is hard), then use Settings > Behavior > Show System Apps.
+- Chrome's first-run screens: choose to continue WITHOUT an account / "No thanks" (never sign in).
+- Logs may be a Premium feature: if it is locked, note it and verify rules through the browser only.
 - Suggested flow: firewall on -> block the browser (or another app) on Wi-Fi only -> verify on
   Wi-Fi -> switch to mobile data -> verify it now works -> block it on mobile data -> verify ->
   turn Wi-Fi back on -> unblock -> verify. Always turn Wi-Fi back on before you finish.
