@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""merge.py <dir> -> markdown on stdout: job status/timing, per-run results, per-switch rows, from <dir>/**/summary.json"""
+import glob, json, os, sys
+from collections import Counter
+
+rows = []
+for f in sorted(glob.glob(os.path.join(sys.argv[1], "**", "summary.json"), recursive=True)):
+    try:
+        r = json.load(open(f))
+    except Exception as e:
+        print(f"<!-- bad {f}: {e} -->"); continue
+    r["_dir"] = os.path.relpath(os.path.dirname(f), sys.argv[1])
+    rows.append(r)
+rows.sort(key=lambda r: (str(r.get("build")), str(r.get("api")), str(r.get("pattern")), str(r.get("run"))))
+
+
+def g(r, *ks, d="-"):
+    for k in ks:
+        r = r.get(k) if isinstance(r, dict) else None
+        if r is None:
+            return d
+    return r
+
+
+print(f"## Jobs ({len(rows)})\n")
+print("| job | build | API | pattern | run | status | GMS | GCM before VPN | GCM after VPN | emu start->booted s | booted->installed s | ->GCM s | ->VPN up s | ->done s |")
+print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+for r in rows:
+    t = r.get("times", {})
+    gc = next((t[k] for k in ("gcm_connected",) if k in t), "timeout" if "gcm_timeout" in t else "-")
+    vp = t.get("vpn_up", "FAIL" if "vpn_fail" in t else "-")
+    print(f"| {r['_dir']} | {r.get('build')} | {r.get('api')} | {r.get('pattern')} | {r.get('run')} | {r.get('status')} | {g(r, 'device', 'gms')} | "
+          f"{r.get('gcm_before_vpn', '-')} | {r.get('gcm_after_vpn', '-')} | {t.get('emulator_start_to_booted_s', '-')} | {t.get('installed', '-')} | {gc} | {vp} | {t.get('done', '-')} |")
+
+ok = [r for r in rows if r.get("status") == "ok"]
+print(f"\n## Results ({len(ok)} ok runs)\n")
+print("| build | API | pattern | run | def. switches | Athena clears | replacing/replaced (ms) | GCM reconnects (dumpsys) | GCM ev conns | GCM down s (ev) | MQTT lost/pubs | MQTT max gap s | MQTT reconnects (close reasons) | IP probe fail | DNS probe fail | VPN gone samples | crash lines |")
+print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+short = {"recv-err:Connection reset by peer": "RST", "recv-err:Software caused connection abort": "abort", "ping-noresp-10s": "silent"}
+for r in ok:
+    cl = ", ".join(f"{k} x{v}" for k, v in Counter(short.get(c[1], c[1]) for c in r.get("mq_closes", [])).items()) or "-"
+    print(f"| {r.get('build')} | {r.get('api')} | {r.get('pattern')} | {r.get('run')} | {r.get('n_default_switches')} | {r.get('athena_clears_owner')} | "
+          f"{r.get('fix3_replacing')}/{len(r.get('fix3_replaced_ms', []))} {r.get('fix3_replaced_ms', [])} | {r.get('gcm_reconnects')} | {r.get('gcm_ev_conns')} | {r.get('gcm_ev_down_s')} | "
+          f"{r.get('mq_lost')}/{r.get('mq_pubs')} | {r.get('mq_max_gap')} | {r.get('mq_reconnects')} ({cl}) | {g(r, 'probe_ip', 'fail')}/{g(r, 'probe_ip', 'n')} | "
+          f"{g(r, 'probe_dns', 'fail')}/{g(r, 'probe_dns', 'n')} | {r.get('vpn_none_samples')} | {len(r.get('crash_lines', []))} |")
+
+print("\n## Per switch\n")
+print("| build | API | pattern | run | flap | action | t s | -> default | default after s | Athena clear | replacing | replaced | lost-clear | GCM close | GCM conn after s | MQTT closes | MQTT first rx after s |")
+print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+for r in ok:
+    for p in r.get("per_switch", []):
+        print(f"| {r.get('build')} | {r.get('api')} | {r.get('pattern')} | {r.get('run')} | {p['flap']} | wifi {p['act']} | {p['t']} | {p['to']} | {p['default_after_s']} | "
+              f"{p['athena_clear']} | {p['athena_replacing']} | {p['athena_replaced']} | {p['athena_lost-clear']} | {p['gcm_close']} | {p['gcm_conn_after_s']} | "
+              f"{','.join(p['mq_closes']) or '-'} | {p['mq_first_rx_after_s']} |")

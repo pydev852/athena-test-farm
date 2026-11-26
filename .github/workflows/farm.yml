@@ -1,0 +1,123 @@
+name: farm
+
+on:
+  workflow_dispatch:
+    inputs:
+      apk_tag:
+        description: "Release tag(s) holding the APK to test, comma-separated (one matrix axis), e.g. fix3-pilot,old-180"
+        default: "fix3-pilot"
+      api_levels:
+        description: "JSON list of emulator API levels (google_apis x86_64)"
+        default: "[34, 36]"
+      patterns:
+        description: 'JSON list of flap patterns: a = Wi-Fi off 5 s/on, b = 5 flaps 10 s apart, c = Wi-Fi off, stay on cellular 180 s'
+        default: '["a", "b"]'
+      runs:
+        description: "Runs per (apk, api, pattern) combination; each run is its own emulator job"
+        default: "1"
+      gcm_wait:
+        description: "Seconds to wait for GmsCore's GCM connection before starting the VPN"
+        default: "300"
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        env:
+          TAGS: ${{ inputs.apk_tag }}
+          APIS: ${{ inputs.api_levels }}
+          PATS: ${{ inputs.patterns }}
+          RUNS: ${{ inputs.runs }}
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, os
+          tags = [t.strip() for t in os.environ["TAGS"].split(",") if t.strip()]
+          apis = json.loads(os.environ["APIS"]); pats = json.loads(os.environ["PATS"]); runs = int(os.environ["RUNS"])
+          inc = [{"tag": t, "api": a, "pattern": p, "run": r} for t in tags for a in apis for p in pats for r in range(1, runs + 1)]
+          assert 0 < len(inc) <= 256, len(inc)
+          print("matrix=" + json.dumps({"include": inc}))
+          EOF
+          cat "$GITHUB_OUTPUT"
+
+  farm:
+    needs: setup
+    name: ${{ matrix.tag }} api${{ matrix.api }} ${{ matrix.pattern }}${{ matrix.run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    env:
+      OUT: out/${{ matrix.tag }}-api${{ matrix.api }}-${{ matrix.pattern }}${{ matrix.run }}
+      FARM_API: ${{ matrix.api }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Enable KVM
+        run: |
+          echo "T_JOB0=$(date +%s.%N)" >> "$GITHUB_ENV"
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm; nproc; free -g; df -h / | tail -1
+
+      - name: Prepare APK and device tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ matrix.tag }}
+        run: |
+          gcc -O2 -static -o scripts/mqflap scripts/mqflap.c
+          mkdir -p apk "$OUT"
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p '*.apk' -D apk
+          mv apk/*.apk apk/app.apk
+          sha256sum apk/app.apk | tee "$OUT/apk.sha256"
+          echo "T_EMU0=$(date +%s.%N)" >> "$GITHUB_ENV"
+
+      - name: Emulator run
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: ${{ matrix.api }}
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          cores: 3
+          ram-size: 4096M
+          disk-size: 6G
+          emulator-boot-timeout: 900
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          disable-animations: true
+          script: python3 -I scripts/run.py --apk apk/app.apk --build ${{ matrix.tag }} --pattern ${{ matrix.pattern }} --run ${{ matrix.run }} --gcm-wait ${{ inputs.gcm_wait }} --out ${{ env.OUT }}
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: farm-${{ matrix.tag }}-api${{ matrix.api }}-${{ matrix.pattern }}${{ matrix.run }}
+          path: out/
+          if-no-files-found: warn
+
+  merge:
+    needs: farm
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: farm-*
+          path: all
+      - name: Merge summaries
+        run: |
+          python3 -I scripts/merge.py all > farm-table.md
+          cat farm-table.md >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p merged && cp farm-table.md merged/ && find all -name summary.json | while read f; do d=$(dirname "$f"); cp "$f" "merged/$(basename "$d").json"; done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: farm-table
+          path: merged/
