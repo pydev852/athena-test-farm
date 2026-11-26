@@ -15,6 +15,9 @@ on:
       runs:
         description: "Runs per (apk, api, pattern) combination; each run is its own emulator job"
         default: "1"
+      max_parallel:
+        description: "Maximum emulator jobs at once (GitHub Free: 20 concurrent jobs, Pro: 40)"
+        default: "20"
       gcm_wait:
         description: "Seconds to wait for GmsCore's GCM connection before starting the VPN"
         default: "300"
@@ -52,6 +55,7 @@ jobs:
     timeout-minutes: 55
     strategy:
       fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.max_parallel) }}
       matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
     env:
       OUT: out/${{ matrix.tag }}-api${{ matrix.api }}-${{ matrix.pattern }}${{ matrix.run }}
