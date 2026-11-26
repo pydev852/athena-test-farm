@@ -181,9 +181,11 @@ def find(nodes, texts):
     return None, None
 
 
-def tap(pkg_pat, n, why):
+def tap(pkg_pat, n, why, fg=""):
+    """tap the centre of node n if the focused window (or the package of the UI dump just taken) matches pkg_pat.
+    API 34 images keep mCurrentFocus on the launcher while its ANR dialog comes and goes, so the dump package counts too"""
     f = focus()
-    if pkg_pat not in f:
+    if pkg_pat not in f and pkg_pat not in fg:
         log(f"REFUSE tap {why}: focus={f}"); return False
     x1, y1, x2, y2 = n["b"]
     adb(f"input tap {(x1 + x2) // 2} {(y1 + y2) // 2}")
@@ -207,31 +209,37 @@ def start_vpn(pkg, uid):
             adb("input keyevent KEYCODE_HOME")
             return True
         nodes = uidump(i)
+        pk = {}
+        for n in nodes:
+            pk[n.get("package", "")] = pk.get(n.get("package", ""), 0) + 1
+        fg = max(pk, key=pk.get) if pk else ""
+        if fg and fg not in f:
+            f = f + " dump=" + fg
         log(f"UI {i} focus={f} vpn={up} texts={[n.get('text') or n.get('content-desc') for n in nodes if n.get('text') or n.get('content-desc')][:25]}")
         anr, _ = find(nodes, ["Wait"])
         if anr and any("isn't responding" in n.get("text", "") for n in nodes):
             x1, y1, x2, y2 = anr["b"]; adb(f"input tap {(x1 + x2) // 2} {(y1 + y2) // 2}"); log("TAP Wait on an ANR dialog")
         elif "com.android.vpndialogs" in f:
             n, t = find(nodes, ["OK", "Allow"])
-            if n: tap("com.android.vpndialogs", n, "vpn-consent " + t)
+            if n: tap("com.android.vpndialogs", n, "vpn-consent " + t, fg)
         elif "GrantPermissions" in f or "permissioncontroller" in f:
             n, t = find(nodes, ["Allow", "ALLOW", "While using the app", "Allow all the time"])
-            if n: tap("permissioncontroller", n, "permission " + t)
+            if n: tap("permissioncontroller", n, "permission " + t, fg)
         elif "RequestIgnoreBatteryOptimizations" in f or "com.android.settings" in f:
             n, t = find(nodes, ["Allow", "ALLOW", "OK"])
-            if n: tap("com.android.settings", n, "battery " + t)
+            if n: tap("com.android.settings", n, "battery " + t, fg)
         elif pkg in f:
             n, t = find(nodes, ["Use VPN", "Allow", "Continue", "Next", "Get started", "Get Started", "Accept", "I agree", "Agree",
                                 "Got it", "OK", "Done", "Skip", "Start", "Enable"])
             if n:
-                tap(pkg, n, "athena " + t)
+                tap(pkg, n, "athena " + t, fg)
             elif not up and shield_taps < 4:
                 # shield: first clickable node in the top-left of the home search bar
                 c = [n for n in nodes if n.get("clickable") == "true" and n.get("package") == pkg and n["b"][2] <= W * 0.35
                      and n["b"][1] >= H * 0.02 and n["b"][3] <= H * 0.2 and (n["b"][2] - n["b"][0]) < W * 0.3]
                 c.sort(key=lambda n: (n["b"][1], n["b"][0]))
                 if c:
-                    shield_taps += 1; tap(pkg, c[0], f"shield #{shield_taps} {c[0].get('bounds')}")
+                    shield_taps += 1; tap(pkg, c[0], f"shield #{shield_taps} {c[0].get('bounds')}", fg)
                     time.sleep(3)
                 else:
                     log("no shield candidate")
@@ -273,12 +281,39 @@ PKG, UID = mm[0]
 INFO["pkg"], INFO["uid"] = PKG, UID
 gu = re.search(r"uid:(\d+)", adb("pm list packages -U com.google.android.gms | grep -m1 'gms uid'"))
 GMS_UID = gu.group(1) if gu else "0"
+adb(f"mkdir -p {D} && chmod 777 {D}")
+for f in ("mqflap", "samp.sh", "dnsprobe.sh"):
+    log(f"push {f}: {adbx(['push', os.path.join(HERE, f), f'{D}/{f}'], 60)}")
+adb(f"chmod 755 {D}/mqflap {D}/samp.sh {D}/dnsprobe.sh")
+PIP, PPORT = A.probe.split(":")
+
+
+def selftest(runas):
+    """3 fresh TCP probes to the local HTTP server (no VPN yet); returns the number that succeeded"""
+    o = adb(f"cd {D} && {runas}{D}/mqflap probe {PIP} {PPORT} {PIP} selftest 700 2; sleep 3", 30)
+    return len(re.findall(r"PROBE \d+ OK", o)), o
+
+
 CLIENT = ("shell", "2000")
+INFO["client_selftest"] = {}
 if ROOT:
     for cp in A.client_pkg.split(","):
         cu = re.search(r"uid:(\d+)", adb(f"pm list packages -U {cp} | grep -m1 'package:{cp} '"))
-        if cu and adb(f"su {cu.group(1)} id").startswith(f"uid={cu.group(1)}"):
+        if not (cu and adb(f"su {cu.group(1)} id").startswith(f"uid={cu.group(1)}")):
+            continue
+        # an app uid without a running process is blocked by the background firewall chain on Android 15+:
+        # exempt the client package (power-save allowlist, active standby bucket)
+        for c in (f"dumpsys deviceidle whitelist +{cp}", f"am set-standby-bucket {cp} active",
+                  f"cmd appops set {cp} RUN_ANY_IN_BACKGROUND allow", f"am set-inactive {cp} false"):
+            adb(c)
+        n, o = selftest(f"su {cu.group(1)} ")
+        INFO["client_selftest"][cp] = n
+        log(f"client selftest {cp} uid {cu.group(1)}: {n} OK | {o[-300:]}")
+        if n:
             CLIENT = (cp, cu.group(1)); break
+if CLIENT[0] == "shell":
+    INFO["client_selftest"]["shell"] = selftest("")[0]
+snap("netpolicy", "dumpsys netpolicy | head -80")
 INFO["client"] = {"pkg": CLIENT[0], "uid": CLIENT[1],
                   "note": "app uid via su" if CLIENT[0] != "shell" else "shell uid 2000: NOT representative on Android 14+ (socket kill skips it)"}
 log(f"client {INFO['client']}")
@@ -310,12 +345,7 @@ INFO["gcm_after_vpn"] = st2
 mark("gcm_after_vpn" if ok2 else "gcm_after_vpn_timeout")
 
 # ---- workloads ----
-adb(f"mkdir -p {D} && chmod 777 {D}")
-for f in ("mqflap", "samp.sh", "dnsprobe.sh"):
-    log(f"push {f}: {adbx(['push', os.path.join(HERE, f), f'{D}/{f}'], 60)}")
-adb(f"chmod 755 {D}/mqflap {D}/samp.sh {D}/dnsprobe.sh")
 BROKER = socket.gethostbyname(A.broker)
-PIP, PPORT = A.probe.split(":")
 INFO["broker_ip"], INFO["probe_target"] = BROKER, A.probe
 RUNAS = f"su {CLIENT[1]} " if CLIENT[0] != "shell" else ""
 CAT = "su 0 cat" if ROOT else "cat"
