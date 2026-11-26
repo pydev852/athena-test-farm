@@ -1,0 +1,32 @@
+# Checks that GitHub Actions can get an Anthropic access token through Workload Identity Federation
+# (no API key stored in the repo). Run by hand from the Actions tab or with `gh workflow run`.
+name: anthropic-wif-test
+on: workflow_dispatch
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  call-claude:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch GitHub OIDC token
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const token = await core.getIDToken('https://api.anthropic.com');
+            core.setSecret(token);
+            core.exportVariable('JWT', token);
+      - name: Exchange for an Anthropic access token
+        run: |
+          curl -sS https://api.anthropic.com/v1/oauth/token \
+            -H "content-type: application/json" \
+            --data @- <<JSON | jq 'with_entries(if (.key | test("token$")) then .value = "<redacted>" else . end)'
+          {
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": "$JWT",
+            "federation_rule_id": "fdrl_019mPiqeBa73CLrB2hPnRTPf",
+            "organization_id": "7d52ae99-dfbd-40d3-b376-6441ec575fb5",
+            "service_account_id": "svac_011zdUKSfKF4hoJwZizvvmMs",
+            "workspace_id": "wrkspc_01FDNRaU2yqDaoKtJ4YaXRkh"
+          }
+          JSON
