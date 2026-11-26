@@ -22,6 +22,12 @@ def g(r, *ks, d="-"):
     return r
 
 
+def gms(r):
+    v = g(r, "device", "gms", d="-")
+    v = " ".join(v) if isinstance(v, list) else str(v).splitlines()[0]
+    return v.replace("versionName=", "") or "-"
+
+
 print(f"## Jobs ({len(rows)})\n")
 print("| job | build | API | pattern | run | status | client uid | GMS | GCM before VPN | GCM after VPN | emu start->booted s | booted->installed s | ->GCM s | ->VPN up s | ->done s |")
 print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
@@ -29,7 +35,7 @@ for r in rows:
     t = r.get("times", {})
     gc = next((t[k] for k in ("gcm_connected",) if k in t), "timeout" if "gcm_timeout" in t else "-")
     vp = t.get("vpn_up", "FAIL" if "vpn_fail" in t else "-")
-    print(f"| {r['_dir']} | {r.get('build')} | {r.get('api')} | {r.get('pattern')} | {r.get('run')} | {r.get('status')} | {g(r, 'client', 'pkg')}/{g(r, 'client', 'uid')} | {g(r, 'device', 'gms')} | "
+    print(f"| {r['_dir']} | {r.get('build')} | {r.get('api')} | {r.get('pattern')} | {r.get('run')} | {r.get('status')} | {g(r, 'client', 'pkg')}/{g(r, 'client', 'uid')} | {gms(r)} | "
           f"{r.get('gcm_before_vpn', '-')} | {r.get('gcm_after_vpn', '-')} | {t.get('emulator_start_to_booted_s', '-')} | {t.get('installed', '-')} | {gc} | {vp} | {t.get('done', '-')} |")
 
 ok = [r for r in rows if r.get("status") == "ok"]
@@ -45,10 +51,10 @@ for r in ok:
           f"{g(r, 'probe_dns', 'fail')}/{g(r, 'probe_dns', 'n')} | {r.get('vpn_none_samples')} | {len(r.get('crash_lines', []))} |")
 
 print("\n## Per switch\n")
-print("| build | API | pattern | run | flap | action | t s | -> default | default after s | Athena clear | replacing | replaced | lost-clear | Athena [Conn]/[Vpn] lines | GCM close | GCM conn after s | MQTT closes | MQTT first rx after s |")
+print("| build | API | pattern | run | flap | action | t s | -> default | default after s | Athena clear | replacing | replaced | lost-clear | Athena lines by component (no [Pkt]) | GCM close | GCM conn after s | MQTT closes | MQTT first rx after s |")
 print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 for r in ok:
     for p in r.get("per_switch", []):
         print(f"| {r.get('build')} | {r.get('api')} | {r.get('pattern')} | {r.get('run')} | {p['flap']} | wifi {p['act']} | {p['t']} | {p['to']} | {p['default_after_s']} | "
-              f"{p['athena_clear']} | {p['athena_replacing']} | {p['athena_replaced']} | {p['athena_lost-clear']} | {p.get('athena_conn-line', '-')}/{p.get('athena_vpn-line', '-')} | {p['gcm_close']} | {p['gcm_conn_after_s']} | "
-              f"{','.join(p['mq_closes']) or '-'} | {p['mq_first_rx_after_s']} |")
+              f"{p['athena_clear']} | {p['athena_replacing']} | {p['athena_replaced']} | {p['athena_lost-clear']} | {' '.join(f'{k}:{v}' for k, v in sorted(p.get('athena_lines', {}).items())) or '-'} | {p['gcm_close']} | {p['gcm_conn_after_s']} | "
+              f"{', '.join(f'{short.get(k, k)} x{v}' for k, v in Counter(p['mq_closes']).items()) or '-'} | {p['mq_first_rx_after_s']} |")

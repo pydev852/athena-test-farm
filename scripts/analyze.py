@@ -218,10 +218,9 @@ for l in lc:
     if not mm or mm.group(2) not in owner_pids:
         continue
     t, msg = float(mm.group(1)), mm.group(4)
-    if "[Conn]" in msg:
-        ath_ev.append((t, "conn-line"))
-    if "[Vpn]" in msg:
-        ath_ev.append((t, "vpn-line"))
+    if "Athena" in msg and "[Pkt]" not in msg and "Setup failed" not in msg:  # Setup failed = billing retries (no account)
+        mc = re.search(r"\] \[(\w+)\]", msg)
+        ath_ev.append((t, "comp:" + (mc.group(1) if mc else "plain")))
     if "Clearing all active sessions due to network change" in msg or "Clearing sessions opened more than" in msg:
         ath_ev.append((t, "clear"))
     elif "Replacing VPN interface" in msg:
@@ -246,8 +245,13 @@ for i, e in enumerate(ev):
         nxt = min([a for a, kk in acts if a > ta] or [t_end + 1])
         row = {"flap": i + 1, "act": k, "t": round(ta - w0, 1), "to": tr,
                "default_after_s": round(float(e[dk]) - ta, 1) if e.get(dk) else None}
-        for kind in ("clear", "replacing", "replaced", "lost-clear", "keep", "conn-line", "vpn-line"):
+        for kind in ("clear", "replacing", "replaced", "lost-clear", "keep"):
             row["athena_" + kind] = sum(1 for t, x in ath_ev if x == kind and ta - 0.5 <= t < nxt)
+        cc = {}
+        for t, x in ath_ev:
+            if x.startswith("comp:") and ta - 0.5 <= t < nxt:
+                cc[x[5:]] = cc.get(x[5:], 0) + 1
+        row["athena_lines"] = cc
         row["gcm_conn_after_s"] = next((round(t - ta, 1) for t, x in gt_ev if x == "conn" and ta < t < nxt), None)
         row["gcm_close"] = sum(1 for t, x in gt_ev if x == "close" and ta - 0.5 <= t < nxt)
         row["mq_closes"] = [w for t, w in mqc if ta - 0.5 <= t < nxt]

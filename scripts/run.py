@@ -255,7 +255,7 @@ log(f"START {json.dumps(INFO)}")
 adbx(["wait-for-device"], 120)
 INFO["device"] = {k: adb(f"getprop {p}") for k, p in (("release", "ro.build.version.release"), ("sdk", "ro.build.version.sdk"),
                                                        ("fingerprint", "ro.build.fingerprint"))}
-INFO["device"]["gms"] = adb("dumpsys package com.google.android.gms | grep -m1 versionName").strip()
+INFO["device"]["gms"] = adb("dumpsys package com.google.android.gms 2>/dev/null | grep -m1 versionName").strip().splitlines()[0:1]
 INFO["device"]["nproc"] = adb("nproc")
 for c in ("settings put system screen_off_timeout 2147483647", "svc power stayon true", "locksettings set-disabled true",
           "input keyevent KEYCODE_WAKEUP", "wm dismiss-keyguard", "settings put global mobile_data_always_on 1",
@@ -320,7 +320,7 @@ log(f"client {INFO['client']}")
 adb(f"appops set {PKG} ACTIVATE_VPN allow")
 adb(f"dumpsys deviceidle whitelist +{PKG}")
 adb(f"pm grant {PKG} android.permission.POST_NOTIFICATIONS")
-INFO["version"] = adb(f"dumpsys package {PKG} | grep -m1 versionName").strip()
+INFO["version"] = adb(f"dumpsys package {PKG} 2>/dev/null | grep -m1 versionName").strip().splitlines()[0:1]
 mark("installed")
 
 # ---- GCM before VPN ----
@@ -343,6 +343,16 @@ time.sleep(5)
 ok2, st2 = wait_gcm(180, "after-vpn")
 INFO["gcm_after_vpn"] = st2
 mark("gcm_after_vpn" if ok2 else "gcm_after_vpn_timeout")
+
+# ---- client app in the foreground ----
+# Android 16 destroys the TCP sockets of an idle uid about every 10 s (am_uid_idle -> InetDiagMessage "Destroyed live tcp
+# sockets for uids={<uid>}"). A client running as an app uid with no process of its own goes idle, so bring that app to the
+# foreground: its uid is then active, like an app in use.
+if CLIENT[0] != "shell":
+    adb(f"monkey -p {CLIENT[0]} -c android.intent.category.LAUNCHER 1", 60)
+    time.sleep(5)
+    INFO["client_foreground"] = focus()
+    log(f"client app foreground: {INFO['client_foreground']}")
 
 # ---- workloads ----
 BROKER = socket.gethostbyname(A.broker)
