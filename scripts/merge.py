@@ -58,3 +58,43 @@ for r in ok:
         print(f"| {r.get('build')} | {r.get('api')} | {r.get('pattern')} | {r.get('run')} | {p['flap']} | wifi {p['act']} | {p['t']} | {p['to']} | {p['default_after_s']} | "
               f"{p['athena_clear']} | {p['athena_replacing']} | {p['athena_replaced']} | {p['athena_lost-clear']} | {' '.join(f'{k}:{v}' for k, v in sorted(p.get('athena_lines', {}).items())) or '-'} | {p['gcm_close']} | {p['gcm_conn_after_s']} | "
               f"{', '.join(f'{short.get(k, k)} x{v}' for k, v in Counter(p['mq_closes']).items()) or '-'} | {p['mq_first_rx_after_s']} |")
+
+# ---- by build x Android version (all patterns) ----
+import statistics as st
+AV = {"29": "10", "30": "11", "31": "12", "32": "12L", "33": "13", "34": "14", "35": "15", "36": "16", "37": "17"}
+
+
+def med(v):
+    v = [x for x in v if x is not None]
+    return f"{st.median(v):.1f}" if v else "-"
+
+
+print("\n## By build and Android version (all patterns)\n")
+print("| build | API (Android) | jobs ok/all | GmsCore GCM connected without account | switches | Athena clears per switch | "
+      "GCM after Wi-Fi off: reconnect s median [dropped/switches, not back before next action] | GCM after Wi-Fi on: same | GCM down s per run (mean) | "
+      "MQTT lost/pubs | MQTT reconnects per switch | MQTT max gap s (max) | IP/DNS probe fail % | VPN gone samples | multi-VPN samples | crash lines |")
+print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+grp = {}
+for r in rows:
+    grp.setdefault((str(r.get("build")), str(r.get("api"))), []).append(r)
+for (b, a), rr in sorted(grp.items(), key=lambda kv: (kv[0][0], int(kv[0][1]) if kv[0][1].isdigit() else 0)):
+    okr = [r for r in rr if r.get("status") == "ok"]
+    gc = sum(1 for r in rr if str(r.get("gcm_before_vpn", "")).startswith("connected="))
+    sw = sum(r.get("n_default_switches", 0) for r in okr)
+    cl = sum(r.get("athena_clears_owner", 0) for r in okr)
+    ps = [p for r in okr for p in r.get("per_switch", [])]
+    def gcmcol(act):
+        x = [p for p in ps if p["act"] == act]
+        dr = [p for p in x if p["gcm_close"] > 0]
+        return f"{med([p['gcm_conn_after_s'] for p in dr])} [{len(dr)}/{len(x)}, {sum(1 for p in dr if p['gcm_conn_after_s'] is None)}]"
+    down = [r.get("gcm_ev_down_s") for r in okr if r.get("gcm_ev_down_s") is not None]
+    ml = sum(r.get("mq_lost", 0) for r in okr); mp = sum(r.get("mq_pubs", 0) for r in okr)
+    mr = sum(r.get("mq_reconnects", 0) for r in okr)
+    mg = [r.get("mq_max_gap") for r in okr if r.get("mq_max_gap") is not None]
+    ipn = sum(r["probe_ip"]["n"] for r in okr); ipf = sum(r["probe_ip"]["fail"] for r in okr)
+    dn = sum(r["probe_dns"]["n"] for r in okr); dfl = sum(r["probe_dns"]["fail"] for r in okr)
+    print(f"| {b} | {a} ({AV.get(a, '?')}) | {len(okr)}/{len(rr)} | {gc}/{len(rr)} | {sw} | {cl / sw if sw else 0:.1f} | "
+          f"{gcmcol('off')} | {gcmcol('on')} | "
+          f"{st.mean(down) if down else 0:.0f} | {ml}/{mp} | {mr / sw if sw else 0:.1f} | {max(mg) if mg else '-'} | "
+          f"{100 * ipf / max(ipn, 1):.1f}/{100 * dfl / max(dn, 1):.1f} | {sum(r.get('vpn_none_samples', 0) for r in okr)} | "
+          f"{sum(r.get('nvpn_multi_samples', 0) for r in okr)} | {sum(len(r.get('crash_lines', [])) for r in okr)} |")
