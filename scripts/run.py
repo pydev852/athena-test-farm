@@ -110,7 +110,7 @@ def netstate():
             if not i:
                 continue
             tr = re.search(r"Transports: ([A-Z|]+)", l)
-            ow = re.search(r"OwnerUid: (\d+)", l)
+            ow = re.search(r"(?:OwnerUid|EstablishingAppUid): (\d+)", l)  # API 29 says EstablishingAppUid
             un = re.search(r"UnderlyingNetworks: (\[[0-9, ]*\]|Null)", l)
             nets[i.group(1)] = {"tr": tr.group(1) if tr else "", "v": bool(re.search(r"Capabilities: [A-Z_&]*VALIDATED", l)),
                                 "owner": ow.group(1) if ow else "", "und": un.group(1).replace(" ", "") if un else ""}
@@ -200,8 +200,8 @@ def start_vpn(pkg, uid):
         W, H = int(m.group(1)), int(m.group(2))
     adb(f"am start -W -n {pkg}/{ACT}", 60)
     time.sleep(3)
-    shield_taps = 0
-    for i in range(45):
+    shield_taps = 0; relaunches = 0
+    for i in range(60):
         f = focus()
         up = vpn_owned_by(uid)
         if up and not re.search(r"vpndialogs|GrantPermissions|permissioncontroller|RequestIgnoreBattery", f):
@@ -228,12 +228,21 @@ def start_vpn(pkg, uid):
         elif "RequestIgnoreBatteryOptimizations" in f or "com.android.settings" in f:
             n, t = find(nodes, ["Allow", "ALLOW", "OK"])
             if n: tap("com.android.settings", n, "battery " + t, fg)
+        elif pkg in f and any("Disable Firewall" in (n.get("text") or "") for n in nodes):
+            n, t = find(nodes, ["Cancel"])  # a shield tap toggled an already running firewall: keep it on
+            if n: tap(pkg, n, "keep firewall on: Cancel", fg)
+        elif pkg in f and not up and shield_taps >= 2 and relaunches < 3:
+            # taps can land on the ActivityRecordInputSink (InputDispatcher: NO_INPUT_CHANNEL) when the window is not
+            # ready for input; restart the activity
+            relaunches += 1; shield_taps = 0
+            log(f"shield taps had no effect: relaunch #{relaunches}")
+            adb(f"am force-stop {pkg}"); time.sleep(1); adb(f"am start -W -n {pkg}/{ACT}", 60); time.sleep(5)
         elif pkg in f:
             n, t = find(nodes, ["Use VPN", "Allow", "Continue", "Next", "Get started", "Get Started", "Accept", "I agree", "Agree",
                                 "Got it", "OK", "Done", "Skip", "Start", "Enable"])
             if n:
                 tap(pkg, n, "athena " + t, fg)
-            elif not up and shield_taps < 4:
+            elif not up:
                 # shield: first clickable node in the top-left of the home search bar
                 c = [n for n in nodes if n.get("clickable") == "true" and n.get("package") == pkg and n["b"][2] <= W * 0.35
                      and n["b"][1] >= H * 0.02 and n["b"][3] <= H * 0.2 and (n["b"][2] - n["b"][0]) < W * 0.3]

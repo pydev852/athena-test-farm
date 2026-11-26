@@ -12,7 +12,7 @@ while [ $(date +%s) -lt $end ] && [ ! -e stop ]; do
       v = ($0 ~ /Capabilities: [A-Z_&]*VALIDATED/) ? "V" : "nv"
       u = ""; if (match($0, /UnderlyingNetworks: (\[[0-9, ]*\]|Null)/)) u = substr($0, RSTART + 20, RLENGTH - 20)
       gsub(/ /, "", u)
-      ow = ""; if (match($0, /OwnerUid: [0-9]+/)) ow = substr($0, RSTART + 10, RLENGTH - 10)
+      ow = ""; if (match($0, /OwnerUid: [0-9]+/)) ow = substr($0, RSTART + 10, RLENGTH - 10); else if (match($0, /EstablishingAppUid: [0-9]+/)) ow = substr($0, RSTART + 20, RLENGTH - 20)
       st = ""; if (match($0, /ni\{[A-Z_]+ [A-Z_]+/)) st = substr($0, RSTART + 3, RLENGTH - 3); sub(/^[A-Z_]+ /, "", st)
       T[id] = tr; F[id] = v; U[id] = u; S[id] = st; W[id] = ow; ids[++n] = id
     }
