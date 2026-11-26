@@ -43,15 +43,27 @@ MAX_MIN=${MAX_MINUTES:-20}
 NOW=$(date +%s); DEADLINE=$((NOW + MAX_MIN * 60 - 120))
 SETTINGS="Device: ${DEVICE}, Android API ${API}, font scale x${FONT_SCALE:-1.0}, theme ${THEME:-light}${A11Y}, language $LOCALE."
 PROMPT="Read brief.md and personas.json, then do the mission until the final report. PERSONA=$PERSONA PLATFORM=android APP_ID=$APP_ID. $SETTINGS Report anything that does not fit this screen (cut text, off-screen buttons, broken layout). You have $MAX_MIN minutes: it is now $NOW (date +%s) and your final report.md and findings.json must be written before $DEADLINE; the run is killed 2 minutes after that."
+# Claude Code runs the agent's shell commands in its Linux sandbox (bubblewrap + socat, no network,
+# writes only under ai-testers/). The sandbox has its own network namespace, so adb cannot reach the
+# adb server on tcp:5037: for the agent's run the server listens on a unix socket in this folder,
+# and that one socket is the only one the sandbox lets commands connect to.
+SOCK="$PWD/.adb.sock"
+adb kill-server >/dev/null 2>&1; rm -f "$SOCK"
+adb -L "localfilesystem:$SOCK" start-server >/dev/null 2>&1
+export ADB_SERVER_SOCKET="localfilesystem:$SOCK"
+adb wait-for-device; adb devices
+mkdir -p .tmp
+SANDBOX='{"sandbox":{"enabled":true,"failIfUnavailable":true,"network":{"allowUnixSockets":["'"$SOCK"'"]}}}'
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
-timeout -k 20 "$((MAX_MIN * 60))" claude -p "$PROMPT" \
+RUNNER_TEMP="$PWD/.tmp" timeout -k 20 "$((MAX_MIN * 60))" claude -p "$PROMPT" \
   --model "$MODEL" --max-turns "${MAX_TURNS:-150}" --max-budget-usd "${MAX_USD:-3}" \
   --output-format stream-json --verbose --strict-mcp-config \
-  --allowedTools "$ALLOWED" --disallowedTools "$DENIED" \
-  > results/agent-stream.jsonl 2> results/agent-errors.txt
+  --settings "$SANDBOX" --allowedTools "$ALLOWED" --disallowedTools "$DENIED" \
+  < /dev/null > results/agent-stream.jsonl 2> results/agent-errors.txt
 CODE=$?
 [ "$CODE" = 124 ] && echo "Agent stopped at the $MAX_MIN minute limit"
 unset ANTHROPIC_API_KEY
+adb kill-server >/dev/null 2>&1; unset ADB_SERVER_SOCKET; adb start-server >/dev/null 2>&1; adb wait-for-device
 python3 scripts/usage.py results/agent-stream.jsonl results/agent-output.json "$PERSONA" || true
 python3 scripts/agent_status.py results/agent-output.json results/agent-errors.txt "$PERSONA" || true
 # 5. App state after the run (no agent text): crash buffer, VPN state, Athena process
