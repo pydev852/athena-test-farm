@@ -16,6 +16,9 @@ jobs:
             const token = await core.getIDToken('https://api.anthropic.com');
             core.setSecret(token);
             core.exportVariable('JWT', token);
+            // Show only the non-secret claims the federation rule matches on
+            const c = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString());
+            core.info(JSON.stringify({ iss: c.iss, aud: c.aud, sub: c.sub, repository: c.repository, repository_owner: c.repository_owner, ref: c.ref, event_name: c.event_name }));
       - name: Exchange for an Anthropic access token
         run: |
           curl -sS https://api.anthropic.com/v1/oauth/token \
