@@ -403,19 +403,6 @@ CAT = "su 0 cat" if ROOT else "cat"
 tag = f"{A.build}-{A.pattern}{A.run}-api{INFO['api'] or INFO['device']['sdk']}"
 DUR = {"a": 260, "b": 520, "c": 330}[A.pattern]
 adb(f"cd {D} && rm -f stop *.{tag}")
-adb(f"cd {D} && (setsid sh samp.sh samp.{tag} {DUR + 120} {PKG} {GMS_UID} >/dev/null 2>&1 </dev/null &)")
-time.sleep(4)
-if not re.search(r" def=\S+:", adb(f"tail -n1 {D}/samp.{tag} 2>/dev/null")):
-    # the device sampler needs awk and date %N; old images (API 24-28) lack one of them
-    adb("pkill -f samp.sh")
-    HOSTSAMP["on"] = True; INFO["sampler"] = "host"
-    host_sampler(os.path.join(OUT, "samp.txt"))
-    log("device sampler produced no network state: sampling from the host")
-    time.sleep(3)
-else:
-    INFO["sampler"] = "device"
-
-
 HOSTSAMP = {"on": False, "last": "", "stop": False}
 
 
@@ -447,6 +434,21 @@ def host_sampler(path):
                 time.sleep(max(0.0, 0.8 - (time.time() - t)))
     th = threading.Thread(target=run, daemon=True); th.start()
     return th
+
+
+adb(f"cd {D} && (setsid sh samp.sh samp.{tag} {DUR + 120} {PKG} {GMS_UID} >/dev/null 2>&1 </dev/null &)")
+time.sleep(4)
+if not re.search(r" def=\S+:", adb(f"tail -n1 {D}/samp.{tag} 2>/dev/null")):
+    # the device sampler needs awk and date %N; old images (API 24-28) lack one of them
+    adb("pkill -f samp.sh")
+    HOSTSAMP["on"] = True; INFO["sampler"] = "host"
+    host_sampler(os.path.join(OUT, "samp.txt"))
+    log("device sampler produced no network state: sampling from the host")
+    time.sleep(3)
+else:
+    INFO["sampler"] = "device"
+
+
 
 
 
