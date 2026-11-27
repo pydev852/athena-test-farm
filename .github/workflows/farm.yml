@@ -55,7 +55,7 @@ jobs:
     needs: setup
     name: ${{ matrix.tag }} api${{ matrix.api }} ${{ matrix.pattern }}${{ matrix.run }}
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJSON(inputs.max_parallel) }}
