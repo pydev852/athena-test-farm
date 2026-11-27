@@ -7,7 +7,7 @@ on:
         description: "Release tag(s) holding the APK to test, comma-separated (one matrix axis), e.g. mainlog-d7a54c9,old-180"
         default: "mainlog-d7a54c9"
       api_levels:
-        description: "JSON list of emulator API levels (google_apis x86_64)"
+        description: "JSON list of emulator API levels (google_apis; x86_64, x86 for 27; 37 as 37.0)"
         default: "[34, 36]"
       patterns:
         description: 'JSON list of flap patterns: a = Wi-Fi off 5 s/on, b = 5 flaps 10 s apart, c = Wi-Fi off, stay on cellular 180 s'
@@ -42,7 +42,9 @@ jobs:
           import json, os
           tags = [t.strip() for t in os.environ["TAGS"].split(",") if t.strip()]
           apis = json.loads(os.environ["APIS"]); pats = json.loads(os.environ["PATS"]); runs = int(os.environ["RUNS"])
-          inc = [{"tag": t, "api": a, "pattern": p, "run": r} for t in tags for a in apis for p in pats for r in range(1, runs + 1)]
+          # API 27 has no google_apis x86_64 image: use x86 (Athena ships x86); API 37 is published as "37.0"
+          arch = lambda a: "x86" if str(a) == "27" else "x86_64"
+          inc = [{"tag": t, "api": a, "arch": arch(a), "pattern": p, "run": r} for t in tags for a in apis for p in pats for r in range(1, runs + 1)]
           assert 0 < len(inc) <= 256, len(inc)
           print("matrix=" + json.dumps({"include": inc}))
           EOF
@@ -98,7 +100,7 @@ jobs:
         with:
           api-level: ${{ matrix.api }}
           target: google_apis
-          arch: x86_64
+          arch: ${{ matrix.arch }}
           profile: pixel_6
           cores: 3
           ram-size: 4096M

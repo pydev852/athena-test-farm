@@ -61,7 +61,7 @@ for r in ok:
 
 # ---- by build x Android version (all patterns) ----
 import statistics as st
-AV = {"29": "10", "30": "11", "31": "12", "32": "12L", "33": "13", "34": "14", "35": "15", "36": "16", "37": "17"}
+AV = {"24": "7.0", "25": "7.1", "26": "8.0", "27": "8.1", "28": "9", "29": "10", "30": "11", "31": "12", "32": "12L", "33": "13", "34": "14", "35": "15", "36": "16", "37": "17", "37.0": "17"}
 
 
 def med(v):
@@ -77,7 +77,7 @@ print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 grp = {}
 for r in rows:
     grp.setdefault((str(r.get("build")), str(r.get("api"))), []).append(r)
-for (b, a), rr in sorted(grp.items(), key=lambda kv: (kv[0][0], int(kv[0][1]) if kv[0][1].isdigit() else 0)):
+for (b, a), rr in sorted(grp.items(), key=lambda kv: (kv[0][0], float(kv[0][1]) if kv[0][1].replace(".", "", 1).isdigit() else 0)):
     okr = [r for r in rr if r.get("status") == "ok"]
     gc = sum(1 for r in rr if str(r.get("gcm_before_vpn", "")).startswith("connected="))
     sw = sum(r.get("n_default_switches", 0) for r in okr)

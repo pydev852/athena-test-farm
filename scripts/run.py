@@ -117,9 +117,32 @@ def netstate():
     return d, nets
 
 
+OWNER_FALLBACK = {"used": False}
+
+
 def vpn_owned_by(uid):
+    """VPN networks owned by uid. API < 29 dumpsys has no OwnerUid/EstablishingAppUid: then a VPN network counts as the
+    app's when the app has a running service (a fresh emulator has no other VPN app)"""
     d, nets = netstate()
-    return [k for k, n in nets.items() if "VPN" in n["tr"] and n["owner"] == uid]
+    v = [k for k, n in nets.items() if "VPN" in n["tr"] and n["owner"] == uid]
+    if not v:
+        nv = [k for k, n in nets.items() if "VPN" in n["tr"] and n["owner"] == ""]
+        if nv and "ServiceRecord" in adb(f"dumpsys activity services {PKG_FOR_OWNER[0]} | grep -m1 ServiceRecord"):
+            OWNER_FALLBACK["used"] = True
+            v = nv
+    return v
+
+
+PKG_FOR_OWNER = ["com.kin.athena"]
+
+
+def pkg_uid(pkg):
+    """uid of an installed package; pm list packages -U needs API 26+, dumpsys package works everywhere"""
+    m = re.search(rf"package:{re.escape(pkg)} uid:(\d+)", adb(f"pm list packages -U {pkg} 2>/dev/null"))
+    if m:
+        return m.group(1)
+    m = re.search(r"userId=(\d+)", adb(f"dumpsys package {pkg} 2>/dev/null | grep -m1 userId="))
+    return m.group(1) if m else None
 
 
 # ---------------- GCM ----------------
@@ -274,6 +297,8 @@ ROOT = adb("su 0 id").startswith("uid=0")
 INFO["su"] = ROOT
 time.sleep(5)
 dismiss_anr()
+snap("tools", "echo date=$(date +%s.%N); for t in awk timeout nc pidof setsid su uiautomator monkey; do echo $t=$(which $t); done; "
+     "logcat -v epoch -d -t 2 2>&1 | tail -2; getprop ro.build.version.sdk; cmd wifi status 2>&1 | head -2")
 snap("connectivity-boot", "dumpsys connectivity")
 snap("wifi-boot", "cmd wifi status")
 snap("ifaces-boot", "ip addr; ip rule; getprop | grep -iE 'gsm|radio' | head -30")
@@ -282,14 +307,14 @@ mark("prep")
 # ---- install ----
 o = adbx(["install", "-r", "-g", A.apk], 300)
 log(f"install: {o[-200:]}")
-pk = adb("pm list packages -U com.kin.athena")
-mm = re.findall(r"package:(\S+) uid:(\d+)", pk)
+pk = re.findall(r"package:(\S+)", adb("pm list packages com.kin.athena"))
+mm = [(p, pkg_uid(p)) for p in pk if pkg_uid(p)]
 if not mm:
     finish("fail: install", {"install_out": o[-500:]})
 PKG, UID = mm[0]
+PKG_FOR_OWNER[0] = PKG
 INFO["pkg"], INFO["uid"] = PKG, UID
-gu = re.search(r"uid:(\d+)", adb("pm list packages -U com.google.android.gms | grep -m1 'gms uid'"))
-GMS_UID = gu.group(1) if gu else "0"
+GMS_UID = pkg_uid("com.google.android.gms") or "0"
 adb(f"mkdir -p {D} && chmod 777 {D}")
 for f in ("mqflap", "samp.sh", "dnsprobe.sh"):
     log(f"push {f}: {adbx(['push', os.path.join(HERE, f), f'{D}/{f}'], 60)}")
@@ -307,7 +332,8 @@ CLIENT = ("shell", "2000")
 INFO["client_selftest"] = {}
 if ROOT:
     for cp in A.client_pkg.split(","):
-        cu = re.search(r"uid:(\d+)", adb(f"pm list packages -U {cp} | grep -m1 'package:{cp} '"))
+        cuid = pkg_uid(cp)
+        cu = re.match(r"(\d+)", cuid or "")
         if not (cu and adb(f"su {cu.group(1)} id").startswith(f"uid={cu.group(1)}")):
             continue
         # an app uid without a running process is blocked by the background firewall chain on Android 15+:
@@ -348,6 +374,7 @@ if not vok:
     finish("fail: vpn not started")
 d, nets = netstate()
 INFO["vpn_net"] = {k: n for k, n in nets.items() if "VPN" in n["tr"]}
+INFO["vpn_owner_fallback"] = OWNER_FALLBACK["used"]
 time.sleep(5)
 ok2, st2 = wait_gcm(180, "after-vpn")
 INFO["gcm_after_vpn"] = st2
@@ -422,7 +449,7 @@ if not ok:
     adb(f"touch {D}/stop"); finish("fail: Wi-Fi not default before the pattern")
 f = parse(last_samp())
 vpn = f.get("vpn", "none")
-if f"owner{UID}" not in vpn:
+if f"owner{UID}" not in vpn and not (OWNER_FALLBACK["used"] and re.search(r":owner(:|$)", vpn)):
     adb(f"touch {D}/stop"); finish(f"fail: VPN owner {vpn}, want {UID}")
 t_h = time.time(); dt = adb("date +%s.%N | cut -c1-14"); t_h2 = time.time()
 off = float(dt) - (t_h + t_h2) / 2 if dt and dt[0].isdigit() else 0.0
