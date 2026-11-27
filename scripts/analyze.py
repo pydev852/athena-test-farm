@@ -220,7 +220,7 @@ def probes(name, key):
     tot = fail = 0; ftimes = []
     for l in lines(name):
         p = l.split()
-        if len(p) >= 4 and p[1] == key:
+        if len(p) >= 4 and p[1] == key and re.match(r"^\d+(\.\d+)?$", p[0]):
             t = float(p[0])
             if t < w0:
                 continue

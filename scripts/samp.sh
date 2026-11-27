@@ -3,7 +3,7 @@
 # "<epoch> def=<id>:<TRANSPORT>:<V|nv> vpn=<id>:<V|nv>:und[..]:owner<uid> wifi=.. cell=.. gcm=<state>,connects=N,ct=<connectTime> pids=<pid of pkg> tcp5228=[..]"
 O=$1; end=$(( $(date +%s) + $2 )); P=$3; G=${4:-0}; cd /data/local/tmp/p2f
 while [ $(date +%s) -lt $end ] && [ ! -e stop ]; do
-  t=$(date +%s.%N | cut -c1-14)
+  t=$(date +%s.%N | cut -c1-14); case $t in *N*) t=$(date +%s).000 ;; esac
   n=$(dumpsys connectivity | awk '
     /^Active default network:/ { d = $4 }
     /^  NetworkAgentInfo\{/ {

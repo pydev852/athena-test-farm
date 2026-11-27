@@ -275,6 +275,11 @@ def start_vpn(pkg, uid):
                     time.sleep(3)
                 else:
                     log("no shield candidate")
+                    if fg != pkg and relaunches < 3:
+                        # API 32: Athena has focus but its window is never drawn (the dump shows the window behind)
+                        relaunches += 1; shield_taps = 0
+                        log(f"Athena focused but not drawn: relaunch #{relaunches}")
+                        adb(f"am force-stop {pkg}"); time.sleep(1); adb(f"am start -W -n {pkg}/{ACT}", 60); time.sleep(5)
         else:
             log(f"unexpected focus {f}; relaunching")
             adb(f"am start -W -n {pkg}/{ACT}", 60)
@@ -399,11 +404,49 @@ tag = f"{A.build}-{A.pattern}{A.run}-api{INFO['api'] or INFO['device']['sdk']}"
 DUR = {"a": 260, "b": 520, "c": 330}[A.pattern]
 adb(f"cd {D} && rm -f stop *.{tag}")
 adb(f"cd {D} && (setsid sh samp.sh samp.{tag} {DUR + 120} {PKG} {GMS_UID} >/dev/null 2>&1 </dev/null &)")
-time.sleep(3)
+time.sleep(4)
+if not re.search(r" def=\S+:", adb(f"tail -n1 {D}/samp.{tag} 2>/dev/null")):
+    # the device sampler needs awk and date %N; old images (API 24-28) lack one of them
+    adb("pkill -f samp.sh")
+    HOSTSAMP["on"] = True; INFO["sampler"] = "host"
+    host_sampler(os.path.join(OUT, "samp.txt"))
+    log("device sampler produced no network state: sampling from the host")
+    time.sleep(3)
+else:
+    INFO["sampler"] = "device"
+
+
+HOSTSAMP = {"on": False, "last": "", "stop": False}
 
 
 def last_samp():
+    if HOSTSAMP["on"]:
+        return HOSTSAMP["last"]
     return adb(f"tail -n1 {D}/samp.{tag} 2>/dev/null")
+
+
+def host_sampler(path):
+    """same line format as samp.sh, sampled from the host (old images: no awk in the shell, or no date %N)"""
+    import threading
+
+    def run():
+        with open(path, "w") as fo:
+            while not HOSTSAMP["stop"]:
+                t = time.time()
+                d, nets = netstate()
+                vp = [(k, n) for k, n in nets.items() if "VPN" in n["tr"]]
+                vs = "none" if not vp else f"{vp[0][0]}:{'V' if vp[0][1]['v'] else 'nv'}:und{vp[0][1]['und']}:owner{vp[0][1]['owner']}:{vp[0][1]['tr']}"
+                fw = lambda tr: ",".join(f"{k}:{'V' if n['v'] else 'nv'}:" for k, n in nets.items() if tr in n["tr"] and "VPN" not in n["tr"]) or "-"
+                dd = "none" if not d or d not in nets else f"{d}:{nets[d]['tr']}:{'V' if nets[d]['v'] else 'nv'}"
+                st, c, _ = gcm_state()
+                pid = adb(f"pidof {PKG}").split()
+                l = (f"{t:.3f} def={dd} vpn={vs} nvpn={len(vp)} wifi={fw('WIFI')} cell={fw('CELLULAR')} "
+                     f"gcm={st.replace(' ', '_')},connects={c if c is not None else ''},ct=,hb= pids={pid[0] if pid else ''} tcp5228=[]")
+                fo.write(l + "\n"); fo.flush()
+                HOSTSAMP["last"] = l
+                time.sleep(max(0.0, 0.8 - (time.time() - t)))
+    th = threading.Thread(target=run, daemon=True); th.start()
+    return th
 
 
 
@@ -431,6 +474,8 @@ def wait_default(tr, tmax, fallback=None):
 def act(cmd):
     r = adb(f"{cmd}; date +%s.%N | cut -c1-14")
     t = r.splitlines()[-1] if r else ""
+    if not re.match(r"^\d+\.\d+$", t):  # no date %N (old toybox): host time; the emulator clock follows the host
+        t = f"{time.time():.3f}"
     log(f"ACT {cmd} dev_t={t}")
     return t
 
@@ -452,7 +497,9 @@ vpn = f.get("vpn", "none")
 if f"owner{UID}" not in vpn and not (OWNER_FALLBACK["used"] and re.search(r":owner(:|$)", vpn)):
     adb(f"touch {D}/stop"); finish(f"fail: VPN owner {vpn}, want {UID}")
 t_h = time.time(); dt = adb("date +%s.%N | cut -c1-14"); t_h2 = time.time()
-off = float(dt) - (t_h + t_h2) / 2 if dt and dt[0].isdigit() else 0.0
+off = float(dt) - (t_h + t_h2) / 2 if re.match(r"^\d+\.\d+$", dt or "") else 0.0
+if not re.match(r"^\d+\.\d+$", dt or ""):
+    dt = f"{time.time():.3f}"
 meta = dict(tag=tag, build=A.build, pattern=A.pattern, run=A.run, battery=100, clock_offset_dev_minus_host=round(off, 3),
             mdao=adb("settings get global mobile_data_always_on"), vpn=vpn, pids=f.get("pids"),
             wifi=adb("cmd wifi status | grep -m1 'Wifi is'"))
@@ -505,7 +552,10 @@ snap("connectivity-end", "dumpsys connectivity")
 snap("athena-services", f"dumpsys activity services {PKG} | grep -E 'ServiceRecord|startRequested|app=ProcessRecord'")
 snap("gcm-end", "dumpsys activity service com.google.android.gms/.gcm.GcmService | head -80")
 adb(f"touch {D}/stop"); time.sleep(4)
+HOSTSAMP["stop"] = True
 for k in ("samp", "mq", "probe", "dns"):
+    if k == "samp" and HOSTSAMP["on"]:
+        continue
     open(os.path.join(OUT, f"{k}.txt"), "w").write(adb(f"{CAT} {D}/{k}.{tag}", 60) + "\n")
 adb(f"rm -f {D}/*.{tag} {D}/stop; pkill -f mqflap" + ("; su 0 pkill -f mqflap" if ROOT else ""))
 lc.terminate(); pub.terminate()
