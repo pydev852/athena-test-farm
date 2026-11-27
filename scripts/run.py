@@ -520,15 +520,17 @@ log(f"WARM mq=[{adb(f'grep -cE READY {D}/mq.{tag}')} READY, {adb(f'grep -c RXPUS
 mark("workloads_up")
 
 EV = []
+# Android 8.0 (API 26): svc wifi from the shell uid fails (no CHANGE_WIFI_STATE); run it as root there
+SVC = "su 0 svc" if ROOT and INFO["device"]["sdk"] in ("24", "25", "26", "27") else "svc"
 OFF_FB = "cmd wifi set-wifi-enabled disabled"
 ON_FB = "cmd wifi set-wifi-enabled enabled"
 
 
 def flap(hold):
-    e = {"off": act("svc wifi disable")}
+    e = {"off": act(f"{SVC} wifi disable")}
     ok, t = wait_default("CELLULAR", 60, OFF_FB); e["cell_default"] = t
     time.sleep(hold)
-    e["on"] = act("svc wifi enable")
+    e["on"] = act(f"{SVC} wifi enable")
     ok, t = wait_default("WIFI", 90, ON_FB); e["wifi_default"] = t
     EV.append(e); log(f"FLAP {e}")
 
@@ -542,7 +544,7 @@ elif A.pattern == "b":
             time.sleep(10)
     tail = 90
 else:
-    e = {"off": act("svc wifi disable")}
+    e = {"off": act(f"{SVC} wifi disable")}
     ok, t = wait_default("CELLULAR", 60, OFF_FB); e["cell_default"] = t
     EV.append(e); log(f"MOVE {e}"); tail = 180
 time.sleep(tail)
