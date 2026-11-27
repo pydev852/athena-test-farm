@@ -42,9 +42,10 @@ jobs:
           import json, os
           tags = [t.strip() for t in os.environ["TAGS"].split(",") if t.strip()]
           apis = json.loads(os.environ["APIS"]); pats = json.loads(os.environ["PATS"]); runs = int(os.environ["RUNS"])
-          # API 27 has no google_apis x86_64 image: use x86 (Athena ships x86); API 37 is published as "37.0"
+          # API 27 has no google_apis x86_64 image: use x86 (Athena ships x86); API 37 is published as "37.0", so api levels
+          # are strings (a JSON number 37.0 would render as 37 in the matrix)
           arch = lambda a: "x86" if str(a) == "27" else "x86_64"
-          inc = [{"tag": t, "api": a, "arch": arch(a), "pattern": p, "run": r} for t in tags for a in apis for p in pats for r in range(1, runs + 1)]
+          inc = [{"tag": t, "api": str(a), "arch": arch(a), "pattern": p, "run": r} for t in tags for a in apis for p in pats for r in range(1, runs + 1)]
           assert 0 < len(inc) <= 256, len(inc)
           print("matrix=" + json.dumps({"include": inc}))
           EOF
