@@ -52,7 +52,7 @@ take Athena off the power-save allowlist (unless the scenario keeps it), write "
 framework shutdown like the power menu; `-f reboot=adb` for `adb reboot`), then for 120 s after
 `sys.boot_completed` sample `dumpsys connectivity` for Athena's VPN, probe HTTP as an app uid, and collect logcat (all
 buffers). Scenarios: A start-on-boot, B always-on, C both, D always-on + lockdown, E both + lockdown, F start-on-boot with
-the battery exemption kept.
+the battery exemption kept, U `adb install -r` of the same APK while the VPN runs (no reboot).
 
 ```sh
 gh workflow run boot.yml -R pydev852/athena-test-farm -f apk_tag=fix6-1ebf659,old-180 -f scenarios='["A", "D"]'

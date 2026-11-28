@@ -13,6 +13,7 @@ after boot_completed, probe traffic once the VPN is up and at the end -> logcat 
 Scenarios (start on boot, always-on, lockdown, keep battery exemption):
   A  on,  off, -, no     B  off, on, 0, no     C  on, on, 0, no
   D  off, on, 1, no      E  on,  on, 1, no     F  on, off, -, yes
+  U  on,  off, -, no, and no reboot: adb install -r of the same APK while the VPN runs (times are from the end of the install)
 """
 import argparse, json, os, re, subprocess, sys, threading, time
 
@@ -20,7 +21,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 D = "/data/local/tmp/p2f"
 ACT = "com.kin.athena.presentation.MainActivity"
 SCEN = {"A": (True, False, False, False), "B": (False, True, False, False), "C": (True, True, False, False),
-        "D": (False, True, True, False), "E": (True, True, True, False), "F": (True, False, False, True)}
+        "D": (False, True, True, False), "E": (True, True, True, False), "F": (True, False, False, True),
+        "U": (True, False, False, False)}  # U: no reboot, adb install -r of the same APK while the VPN runs
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--apk", required=True)
@@ -36,6 +38,7 @@ ap.add_argument("--client-pkg", default="com.android.chrome,com.google.android.y
                 help="run the HTTP probe as the uid of the first installed package (su); falls back to the shell uid")
 A = ap.parse_args()
 SOB, AON, LOCK, KEEP_EXEMPT = SCEN[A.scenario]
+UPD = A.scenario == "U"
 
 OUT = os.path.abspath(A.out)
 for d in ("", "snap", "ui"):
@@ -481,38 +484,6 @@ snap("services-prereboot", f"dumpsys activity services {PKG} | grep -E 'ServiceR
 adbx(["logcat", "-d", "-v", "epoch", "-b", "all"], 180, os.path.join(OUT, "logcat-prereboot.txt"))
 mark("scenario_set")
 
-# ---- reboot ----
-log(f"appops write-settings: {adb('appops write-settings')}")
-time.sleep(6)  # DeviceIdleController writes its allowlist file a few seconds after a change
-BOOT_ID = adb("cat /proc/sys/kernel/random/boot_id")
-t_reboot = time.time()
-if A.reboot == "svc":
-    log(f"REBOOT svc power reboot boot_id={BOOT_ID} {adb('svc power reboot', 30)}")
-else:
-    log(f"REBOOT adb reboot boot_id={BOOT_ID} {adbx(['reboot'], 60)}")
-INFO["reboot_method"] = A.reboot
-TIMES["reboot_at"] = round(t_reboot - T0, 1)
-t_adb = t_bc = None
-reconnects = 0
-while time.time() - t_reboot < 600:
-    st = adbx(["get-state"], 10)
-    if st.strip() == "device":
-        bid = adb("cat /proc/sys/kernel/random/boot_id", 10)
-        if re.match(r"^[0-9a-f-]{36}$", bid) and bid != BOOT_ID:
-            t_adb = time.time(); break
-        if bid == BOOT_ID and INFO["reboot_method"] == "svc" and time.time() - t_reboot > 90:
-            INFO["reboot_method"] = "adb (svc power reboot did not reboot)"
-            log(f"still the same boot after 90 s: adb reboot {adbx(['reboot'], 60)}")
-    elif time.time() - t_reboot > 90 * (reconnects + 1) and reconnects < 4:
-        reconnects += 1
-        log(f"device state {st!r}: adb reconnect #{reconnects} {adbx(['reconnect', 'offline'], 20)}")
-        if reconnects >= 2:
-            adbx(["kill-server"], 20); adbx(["start-server"], 30)
-    time.sleep(1)
-if not t_adb:
-    finish("fail: device did not come back after adb reboot", {"adb_state": adbx(["devices", "-l"], 10)})
-log(f"adb back after {t_adb - t_reboot:.1f} s")
-
 # logcat from the host as soon as adb is back (the boot logs may wrap a small buffer before the final dump)
 LC = {"stop": False}
 
@@ -529,7 +500,52 @@ def logcat_stream():
             time.sleep(1)
 
 
-th = threading.Thread(target=logcat_stream, daemon=True); th.start()
+_, _nets, _ = netstate()
+PRE_VPN = athena_vpn(_nets, UID)  # U: the VPN network from before the update does not count as "back"
+INFO["vpn_net_before"] = PRE_VPN
+# ---- reboot, or (scenario U) an in-place update with adb install -r ----
+log(f"appops write-settings: {adb('appops write-settings')}")
+time.sleep(6)  # DeviceIdleController writes its allowlist file a few seconds after a change
+th = threading.Thread(target=logcat_stream, daemon=True)
+if UPD:
+    th.start(); time.sleep(2)
+    t_reboot = time.time()
+    TIMES["reboot_at"] = round(t_reboot - T0, 1)
+    o = adbx(["install", "-r", A.apk], 300)
+    t_adb = t_bc = time.time()
+    INFO["update_out"] = o[-200:]; INFO["reboot_method"] = "none (adb install -r)"
+    log(f"UPDATE adb install -r took {t_bc - t_reboot:.1f} s: {o[-200:]}")
+else:
+    BOOT_ID = adb("cat /proc/sys/kernel/random/boot_id")
+    t_reboot = time.time()
+    if A.reboot == "svc":
+        # API 26 ignores svc power reboot from the shell uid: run it as root where the image allows
+        log(f"REBOOT svc power reboot boot_id={BOOT_ID} {adb(('su 0 ' if ROOT else '') + 'svc power reboot', 30)}")
+    else:
+        log(f"REBOOT adb reboot boot_id={BOOT_ID} {adbx(['reboot'], 60)}")
+    INFO["reboot_method"] = A.reboot
+    TIMES["reboot_at"] = round(t_reboot - T0, 1)
+    t_adb = t_bc = None
+    reconnects = 0
+    while time.time() - t_reboot < 600:
+        st = adbx(["get-state"], 10)
+        if st.strip() == "device":
+            bid = adb("cat /proc/sys/kernel/random/boot_id", 10)
+            if re.match(r"^[0-9a-f-]{36}$", bid) and bid != BOOT_ID:
+                t_adb = time.time(); break
+            if bid == BOOT_ID and INFO["reboot_method"] == "svc" and time.time() - t_reboot > 45:
+                INFO["reboot_method"] = "adb (svc power reboot did not reboot)"
+                log(f"still the same boot after 45 s: adb reboot {adbx(['reboot'], 60)}")
+        elif time.time() - t_reboot > 90 * (reconnects + 1) and reconnects < 4:
+            reconnects += 1
+            log(f"device state {st!r}: adb reconnect #{reconnects} {adbx(['reconnect', 'offline'], 20)}")
+            if reconnects >= 2:
+                adbx(["kill-server"], 20); adbx(["start-server"], 30)
+        time.sleep(1)
+    if not t_adb:
+        finish("fail: device did not come back after adb reboot", {"adb_state": adbx(["devices", "-l"], 10)})
+    log(f"adb back after {t_adb - t_reboot:.1f} s")
+    th.start()
 
 samples = []
 t_vpn = None
@@ -540,7 +556,7 @@ def sample():
     t = time.time()
     bc = adb("getprop sys.boot_completed", 10)
     d, nets, _ = netstate(15)
-    v = athena_vpn(nets, UID)
+    v = [k for k in athena_vpn(nets, UID) if not (UPD and k in PRE_VPN)]
     pid = adb(f"pidof {PKG}", 10)
     s = {"t": round(t, 3), "bc": bc, "def": d, "vpn": [f"{k}:{nets[k]['tr']}:{'V' if nets[k]['v'] else 'nv'}:owner{nets[k]['owner']}" for k in v],
          "nvpn_any": sum(1 for n in nets.values() if "VPN" in n["tr"]), "pid": pid if re.match(r"^[\d ]+$", pid or "") else ""}
@@ -548,7 +564,7 @@ def sample():
     return s
 
 
-while time.time() - t_adb < 420:
+while not UPD and time.time() - t_adb < 420:
     s = sample()
     if s["bc"] == "1":
         t_bc = time.time(); break
@@ -616,6 +632,7 @@ with open(os.path.join(OUT, "athena.txt"), "w") as fa:
             fa.write(l + "\n")
 
 PAT = {
+    "fix7": r"start source=\S+ .*result=|Firewall is not running|Not-running notification|Background start refused|Failed to start|Restart after process death",
     "am_crash": r"am_crash.*com\.kin\.athena",
     "unhandled_vpnservice": r"Unhandled action: android\.net\.VpnService",
     "boot_debug": r"\[Boot\]",
@@ -664,8 +681,14 @@ worker_ev = bool(worker_t)
 boot_start = [l for l in EVD["boot_debug"] if "Starting the VPN" in l]
 own_start = [l for l in EVD["vpn_start"] if "onStartCommand action=com.kin.athena.START_VPN" in l]
 starter = boot_start[0].split("[Boot]", 1)[1].strip() if boot_start else None
+src = next((re.search(r"\[Vpn\] start source=(\S+) .*result=started", l).group(1) for l in EVD["fix7"]
+            if re.search(r"\[Vpn\] start source=(\S+) .*result=started", l)), None)
+if src and not starter:
+    starter = f"source={src}"
 if t_vpn:
-    if boot_start:
+    if src:  # FIX7 and later: the client logs who started it
+        path = {"boot": "BootReceiver (FGS)", "update": "update receiver", "always-on": "Always-on", "sticky": "sticky restart"}.get(src, src)
+    elif boot_start:
         path = "Worker" if worker_ev else "BootReceiver"
         if aon_t and ts(boot_start[0]) and aon_t < ts(boot_start[0]):
             path += " (process started by Always-on)"

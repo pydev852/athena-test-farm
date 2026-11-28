@@ -6,3 +6,4 @@ ai-testers/results.enc/
 *.pem.private
 ai-testers/.adb.sock
 ai-testers/.tmp/
+__pycache__/

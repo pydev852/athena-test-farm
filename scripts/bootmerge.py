@@ -4,7 +4,7 @@ import glob, json, os, sys
 
 AV = {"26": "8.0", "27": "8.1", "28": "9", "29": "10", "30": "11", "31": "12", "32": "12L", "33": "13", "34": "14", "35": "15",
       "36": "16", "37": "17", "37.0": "17"}
-SC = {"A": "start-on-boot", "B": "always-on", "C": "both", "D": "always-on+lockdown", "E": "both+lockdown", "F": "start-on-boot+battery exempt"}
+SC = {"A": "start-on-boot", "B": "always-on", "C": "both", "D": "always-on+lockdown", "E": "both+lockdown", "F": "start-on-boot+battery exempt", "U": "update (install -r), no reboot"}
 rows = []
 for f in sorted(glob.glob(os.path.join(sys.argv[1], "**", "summary.json"), recursive=True)):
     try:
