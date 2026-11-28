@@ -673,7 +673,7 @@ with open(os.path.join(OUT, "athena.txt"), "w") as fa:
             fa.write(l + "\n")
 
 PAT = {
-    "fix7": r"start source=\S+ .*result=|Firewall is not running|Not-running notification|Background start refused|Failed to start|Restart after process death",
+    "fix7": r" Athena\s*:.*(start source=\S+ .*result=|Firewall is not running|Not-running notification|Background start refused|Failed to start|Restart after process death|not started|start failed)",
     "am_crash": r"am_crash.*com\.kin\.athena",
     "unhandled_vpnservice": r"Unhandled action: android\.net\.VpnService",
     "boot_debug": r"\[Boot\]",
