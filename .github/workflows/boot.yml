@@ -1,0 +1,130 @@
+name: boot
+
+on:
+  workflow_dispatch:
+    inputs:
+      apk_tag:
+        description: "Release tag(s) holding the APK to test, comma-separated (one matrix axis)"
+        default: "fix6-1ebf659,old-180"
+      api_levels:
+        description: "JSON list of emulator API levels (google_apis; x86_64, x86 for 27; 37 as 37.0)"
+        default: '["26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37.0"]'
+      scenarios:
+        description: "JSON list: A start-on-boot, B always-on, C both, D always-on+lockdown, E both+lockdown, F start-on-boot with battery exemption"
+        default: '["A", "B", "C", "D", "E", "F"]'
+      window:
+        description: "Seconds to watch for the VPN after sys.boot_completed"
+        default: "120"
+      max_parallel:
+        description: "Maximum emulator jobs at once"
+        default: "40"
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        env:
+          TAGS: ${{ inputs.apk_tag }}
+          APIS: ${{ inputs.api_levels }}
+          SCS: ${{ inputs.scenarios }}
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, os
+          tags = [t.strip() for t in os.environ["TAGS"].split(",") if t.strip()]
+          apis = json.loads(os.environ["APIS"]); scs = json.loads(os.environ["SCS"])
+          arch = lambda a: "x86" if str(a) == "27" else "x86_64"
+          inc = [{"tag": t, "api": str(a), "arch": arch(a), "scenario": s} for t in tags for a in apis for s in scs]
+          assert 0 < len(inc) <= 256, len(inc)
+          print("matrix=" + json.dumps({"include": inc}))
+          EOF
+          cat "$GITHUB_OUTPUT"
+
+  boot:
+    needs: setup
+    name: ${{ matrix.tag }} api${{ matrix.api }} ${{ matrix.scenario }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    env:
+      OUT: out/${{ matrix.tag }}-api${{ matrix.api }}-${{ matrix.scenario }}
+      FARM_API: ${{ matrix.api }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm; nproc; free -g
+
+      - name: HTTP probe target
+        # TEST-NET address on the host lo: a public-looking IP that Athena routes through the VPN (no allowLocal bypass)
+        run: |
+          sudo ip addr add 203.0.113.1/32 dev lo
+          nohup python3 -m http.server 8080 --bind 203.0.113.1 --directory "$RUNNER_TEMP" > "$RUNNER_TEMP/http.log" 2>&1 &
+          sleep 1; curl -sI http://203.0.113.1:8080/ | head -1
+
+      - name: Prepare APK and device tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ matrix.tag }}
+        run: |
+          gcc -O2 -static -o scripts/mqflap scripts/mqflap.c
+          mkdir -p apk "$OUT"
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p '*.apk' -D apk
+          mv apk/*.apk apk/app.apk
+          sha256sum apk/app.apk | tee "$OUT/apk.sha256"
+          echo "T_EMU0=$(date +%s.%N)" >> "$GITHUB_ENV"
+
+      - name: Emulator run
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: ${{ matrix.api }}
+          target: google_apis
+          arch: ${{ matrix.arch }}
+          profile: pixel_6
+          cores: 3
+          ram-size: 4096M
+          disk-size: 6G
+          emulator-boot-timeout: 900
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          disable-animations: true
+          script: python3 -I scripts/boot.py --apk apk/app.apk --build ${{ matrix.tag }} --scenario ${{ matrix.scenario }} --window ${{ inputs.window }} --probe 203.0.113.1:8080 --out ${{ env.OUT }}
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: boot-${{ matrix.tag }}-api${{ matrix.api }}-${{ matrix.scenario }}
+          path: out/
+          if-no-files-found: warn
+
+  merge:
+    needs: boot
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: boot-*
+          path: all
+      - name: Merge summaries
+        run: |
+          python3 -I scripts/bootmerge.py all > boot-table.md
+          cat boot-table.md >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p merged && cp boot-table.md merged/ && find all -name summary.json | while read f; do d=$(dirname "$f"); cp "$f" "merged/$(basename "$d").json"; done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: boot-table
+          path: merged/

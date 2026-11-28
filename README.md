@@ -44,6 +44,21 @@ To test another build, upload its APK as a release asset (one APK per release) a
 - `scripts/analyze.py`, `scripts/merge.py`: per-job summary and the merged table
 
 
+## Boot start test (`boot.yml`)
+
+Does Athena's VPN come back after `adb reboot`, and which path starts it? Per job: install, start the VPN through the UI,
+take Athena off the power-save allowlist (unless the scenario keeps it), write "Start on Boot" into Athena's DataStore file
+(run-as on debug builds, su otherwise), set or clear Always-on VPN in Settings.Secure, reboot, then for 120 s after
+`sys.boot_completed` sample `dumpsys connectivity` for Athena's VPN, probe HTTP as an app uid, and collect logcat (all
+buffers). Scenarios: A start-on-boot, B always-on, C both, D always-on + lockdown, E both + lockdown, F start-on-boot with
+the battery exemption kept.
+
+```sh
+gh workflow run boot.yml -R pydev852/athena-test-farm -f apk_tag=fix6-1ebf659,old-180 -f scenarios='["A", "D"]'
+```
+
+Files: `scripts/boot.py` (one job), `scripts/bootmerge.py` (API x scenario table).
+
 ## AI exploratory testers (`ai-testers.yml`)
 
 Adapted from [mobile-agent-testers](https://github.com/pierridotite/mobile-agent-testers) (MIT, see
