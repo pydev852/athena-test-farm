@@ -27,6 +27,9 @@ ap.add_argument("--apk", required=True)
 ap.add_argument("--build", required=True)
 ap.add_argument("--scenario", required=True, choices=sorted(SCEN))
 ap.add_argument("--out", required=True)
+ap.add_argument("--reboot", default="svc", choices=["svc", "adb"],
+                help="svc: svc power reboot (clean shutdown through the framework, like the power menu; app ops and the power-save "
+                     "allowlist are written); adb: adb reboot (init reboot without the framework shutdown)")
 ap.add_argument("--window", type=int, default=120, help="seconds to sample after sys.boot_completed")
 ap.add_argument("--probe", default="203.0.113.1:8080", help="ip:port of the HTTP probe target on the runner")
 ap.add_argument("--client-pkg", default="com.android.chrome,com.google.android.youtube,com.google.android.apps.maps,com.android.vending",
@@ -41,7 +44,7 @@ TL = open(os.path.join(OUT, "timeline.txt"), "a")
 T0 = time.time()
 TIMES = {}
 INFO = {"build": A.build, "scenario": A.scenario, "start_on_boot": SOB, "always_on": AON, "lockdown": LOCK,
-        "keep_battery_exemption": KEEP_EXEMPT, "apk": os.path.basename(A.apk), "api": os.environ.get("FARM_API"),
+        "keep_battery_exemption": KEEP_EXEMPT, "reboot": A.reboot, "apk": os.path.basename(A.apk), "api": os.environ.get("FARM_API"),
         "gh_run": os.environ.get("GITHUB_RUN_ID")}
 if os.environ.get("T_EMU0"):
     TIMES["emulator_start_to_booted_s"] = round(T0 - float(os.environ["T_EMU0"]), 1)
@@ -479,9 +482,15 @@ adbx(["logcat", "-d", "-v", "epoch", "-b", "all"], 180, os.path.join(OUT, "logca
 mark("scenario_set")
 
 # ---- reboot ----
+log(f"appops write-settings: {adb('appops write-settings')}")
+time.sleep(6)  # DeviceIdleController writes its allowlist file a few seconds after a change
 BOOT_ID = adb("cat /proc/sys/kernel/random/boot_id")
 t_reboot = time.time()
-log(f"REBOOT boot_id={BOOT_ID} {adbx(['reboot'], 60)}")
+if A.reboot == "svc":
+    log(f"REBOOT svc power reboot boot_id={BOOT_ID} {adb('svc power reboot', 30)}")
+else:
+    log(f"REBOOT adb reboot boot_id={BOOT_ID} {adbx(['reboot'], 60)}")
+INFO["reboot_method"] = A.reboot
 TIMES["reboot_at"] = round(t_reboot - T0, 1)
 t_adb = t_bc = None
 reconnects = 0
@@ -491,6 +500,9 @@ while time.time() - t_reboot < 600:
         bid = adb("cat /proc/sys/kernel/random/boot_id", 10)
         if re.match(r"^[0-9a-f-]{36}$", bid) and bid != BOOT_ID:
             t_adb = time.time(); break
+        if bid == BOOT_ID and INFO["reboot_method"] == "svc" and time.time() - t_reboot > 90:
+            INFO["reboot_method"] = "adb (svc power reboot did not reboot)"
+            log(f"still the same boot after 90 s: adb reboot {adbx(['reboot'], 60)}")
     elif time.time() - t_reboot > 90 * (reconnects + 1) and reconnects < 4:
         reconnects += 1
         log(f"device state {st!r}: adb reconnect #{reconnects} {adbx(['reconnect', 'offline'], 20)}")
@@ -655,8 +667,12 @@ starter = boot_start[0].split("[Boot]", 1)[1].strip() if boot_start else None
 if t_vpn:
     if boot_start:
         path = "Worker" if worker_ev else "BootReceiver"
+        if aon_t and ts(boot_start[0]) and aon_t < ts(boot_start[0]):
+            path += " (process started by Always-on)"
     elif SOB and not EVD["boot_debug"]:  # release build: no debug lines
         path = ("Worker" if worker_ev else "BootReceiver") + " (inferred)"
+        if aon_t:
+            path += " (Always-on start seen)"
     elif aon_t and not own_start:
         path = "Always-on"
     else:

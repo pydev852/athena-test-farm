@@ -12,6 +12,9 @@ on:
       scenarios:
         description: "JSON list: A start-on-boot, B always-on, C both, D always-on+lockdown, E both+lockdown, F start-on-boot with battery exemption"
         default: '["A", "B", "C", "D", "E", "F"]'
+      reboot:
+        description: "svc = svc power reboot (clean framework shutdown, like the power menu), adb = adb reboot (no framework shutdown)"
+        default: "svc"
       window:
         description: "Seconds to watch for the VPN after sys.boot_completed"
         default: "120"
@@ -99,7 +102,7 @@ jobs:
           emulator-boot-timeout: 900
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           disable-animations: true
-          script: python3 -I scripts/boot.py --apk apk/app.apk --build ${{ matrix.tag }} --scenario ${{ matrix.scenario }} --window ${{ inputs.window }} --probe 203.0.113.1:8080 --out ${{ env.OUT }}
+          script: python3 -I scripts/boot.py --apk apk/app.apk --build ${{ matrix.tag }} --scenario ${{ matrix.scenario }} --reboot ${{ inputs.reboot }} --window ${{ inputs.window }} --probe 203.0.113.1:8080 --out ${{ env.OUT }}
 
       - name: Upload results
         if: always()
