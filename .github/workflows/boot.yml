@@ -10,7 +10,7 @@ on:
         description: "JSON list of emulator API levels (google_apis; x86_64, x86 for 27; 37 as 37.0)"
         default: '["26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37.0"]'
       scenarios:
-        description: "JSON list: A start-on-boot, B always-on, C both, D always-on+lockdown, E both+lockdown, F start-on-boot with battery exemption, U adb install -r while on (no reboot)"
+        description: "JSON list: A start-on-boot, B always-on, C both, D always-on+lockdown, E both+lockdown, F start-on-boot with battery exemption, U adb install -r while on (no reboot), K kill -9 of the app process 4 times (no reboot)"
         default: '["A", "B", "C", "D", "E", "F"]'
       reboot:
         description: "svc = svc power reboot (clean framework shutdown, like the power menu), adb = adb reboot (no framework shutdown)"

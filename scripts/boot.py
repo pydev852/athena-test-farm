@@ -13,6 +13,8 @@ after boot_completed, probe traffic once the VPN is up and at the end -> logcat 
 Scenarios (start on boot, always-on, lockdown, keep battery exemption):
   A  on,  off, -, no     B  off, on, 0, no     C  on, on, 0, no
   D  off, on, 1, no      E  on,  on, 1, no     F  on, off, -, yes
+  K  on,  off, -, no, and no reboot: kill -9 of Athena's process (su; am crash without root) --kills times, 5 s after each
+     return or 90 s; times are per kill
   U  on,  off, -, no, and no reboot: adb install -r of the same APK while the VPN runs (times are from the end of the install)
 """
 import argparse, json, os, re, subprocess, sys, threading, time
@@ -22,7 +24,8 @@ D = "/data/local/tmp/p2f"
 ACT = "com.kin.athena.presentation.MainActivity"
 SCEN = {"A": (True, False, False, False), "B": (False, True, False, False), "C": (True, True, False, False),
         "D": (False, True, True, False), "E": (True, True, True, False), "F": (True, False, False, True),
-        "U": (True, False, False, False)}  # U: no reboot, adb install -r of the same APK while the VPN runs
+        "U": (True, False, False, False), "K": (True, False, False, False)}
+# K: no reboot; kill -9 the app process --kills times (sticky restart, restart limit) and time the VPN's return  # U: no reboot, adb install -r of the same APK while the VPN runs
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--apk", required=True)
@@ -32,6 +35,7 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--reboot", default="svc", choices=["svc", "adb"],
                 help="svc: svc power reboot (clean shutdown through the framework, like the power menu; app ops and the power-save "
                      "allowlist are written); adb: adb reboot (init reboot without the framework shutdown)")
+ap.add_argument("--kills", type=int, default=4, help="K: process kills in a row")
 ap.add_argument("--window", type=int, default=120, help="seconds to sample after sys.boot_completed")
 ap.add_argument("--probe", default="203.0.113.1:8080", help="ip:port of the HTTP probe target on the runner")
 ap.add_argument("--client-pkg", default="com.android.chrome,com.google.android.youtube,com.google.android.apps.maps,com.android.vending",
@@ -39,6 +43,7 @@ ap.add_argument("--client-pkg", default="com.android.chrome,com.google.android.y
 A = ap.parse_args()
 SOB, AON, LOCK, KEEP_EXEMPT = SCEN[A.scenario]
 UPD = A.scenario == "U"
+KILL = A.scenario == "K"
 
 OUT = os.path.abspath(A.out)
 for d in ("", "snap", "ui"):
@@ -362,7 +367,7 @@ def ds_set_bool(pkg, uid, key, val):
         r = adb(f"run-as {pkg} sh -c 'mkdir -p {dd} && cat {D}/sp.pb > {p}'")
         log(f"datastore write run-as: {r}")
     if (not RUNAS_OK or ds_decode(ds_read(pkg)[0]).get(key) != val) and ROOT:
-        r = adb(f"su 0 sh -c 'mkdir -p {dd} && cat {D}/sp.pb > {p} && chown {uid}:{uid} {dd} {p} && chmod 600 {p} && restorecon -R /data/data/{pkg}/files'")
+        r = adb(f"su 0 sh -c 'mkdir -p {dd} && cat {D}/sp.pb > {p} && chown -R {uid}:{uid} /data/data/{pkg}/files && chmod 600 {p} && restorecon -R /data/data/{pkg}/files'")
         log(f"datastore write su: {r}")
     got = ds_decode(ds_read(pkg)[0])
     return got, got.get(key) == val
@@ -445,6 +450,16 @@ INFO["client"] = {"pkg": CLIENT[0], "uid": CLIENT[1]}
 INFO["probe_no_vpn"] = probe("novpn")
 mark("installed")
 
+# ---- Start on Boot, written before the app first runs: its in-memory DataStore copy then holds the value, so a later
+# settings save (e.g. a run-state flag at start or stop) cannot write the old value back ----
+b, how = ds_read(PKG)
+INFO["datastore_method"] = how
+INFO["datastore_initial"] = ds_decode(b)
+got, ok = ds_set_bool(PKG, UID, "startOnBoot", SOB)
+log(f"startOnBoot={SOB} written={ok} datastore={got}")
+if not ok:
+    finish("fail: could not write startOnBoot", {})
+
 # ---- VPN once ----
 dismiss_anr()
 vok = start_vpn(PKG, UID)
@@ -464,14 +479,8 @@ if not KEEP_EXEMPT and PKG in wl:
 elif KEEP_EXEMPT and PKG not in wl:
     log(f"deviceidle whitelist +{PKG}: {adb(f'dumpsys deviceidle whitelist +{PKG}')}")
 INFO["battery_exempt_before_reboot"] = PKG in adb("dumpsys deviceidle whitelist")
-b, how = ds_read(PKG)
-INFO["datastore_method"] = how
-INFO["datastore_initial"] = ds_decode(b)
-got, ok = ds_set_bool(PKG, UID, "startOnBoot", SOB)
-INFO["datastore_before_reboot"] = got
-log(f"startOnBoot={SOB} written={ok} datastore={got}")
-if not ok:
-    finish("fail: could not write startOnBoot", {})
+INFO["datastore_before_reboot"] = ds_decode(ds_read(PKG)[0])
+log(f"datastore before the reboot: {INFO['datastore_before_reboot']}")
 if AON:
     adb(f"settings put secure always_on_vpn_app {PKG}")
     adb(f"settings put secure always_on_vpn_lockdown {1 if LOCK else 0}")
@@ -507,7 +516,39 @@ INFO["vpn_net_before"] = PRE_VPN
 log(f"appops write-settings: {adb('appops write-settings')}")
 time.sleep(6)  # DeviceIdleController writes its allowlist file a few seconds after a change
 th = threading.Thread(target=logcat_stream, daemon=True)
-if UPD:
+K_TVPN = None
+if KILL:
+    th.start(); time.sleep(2)
+    t_reboot = time.time()
+    TIMES["reboot_at"] = round(t_reboot - T0, 1)
+    INFO["reboot_method"] = "none (process kill)"
+    kills = []
+    for i in range(A.kills):
+        _, nets, _ = netstate()
+        pre = athena_vpn(nets, UID)
+        pids = re.findall(r"\d+", adb(f"pidof {PKG}"))
+        tk = time.time()
+        how = f"su 0 kill -9 {' '.join(pids)}" if ROOT and pids else f"am crash {PKG}"
+        r = adb(how)
+        back = gone = None
+        while time.time() - tk < 90:
+            _, nets, _ = netstate(15)
+            v = athena_vpn(nets, UID)
+            if gone is None and not any(k in pre for k in v):
+                gone = round(time.time() - tk, 1)
+            if [k for k in v if k not in pre]:
+                back = round(time.time() - tk, 1); break
+            time.sleep(0.5)
+        k = {"kill": i + 1, "t": round(tk, 3), "how": how, "out": r[-120:], "vpn_before": pre, "vpn_gone_s": gone, "vpn_back_s": back,
+             "pid_after": adb(f"pidof {PKG}")}
+        kills.append(k)
+        log(f"KILL {k}")
+        if K_TVPN is None and i == 0 and back is not None:
+            K_TVPN = tk + back
+        time.sleep(5)
+    INFO["kills"] = kills
+    t_adb = t_bc = t_reboot
+elif UPD:
     th.start(); time.sleep(2)
     t_reboot = time.time()
     TIMES["reboot_at"] = round(t_reboot - T0, 1)
@@ -548,7 +589,7 @@ else:
     th.start()
 
 samples = []
-t_vpn = None
+t_vpn = K_TVPN
 PROBES = {}
 
 
@@ -564,7 +605,7 @@ def sample():
     return s
 
 
-while not UPD and time.time() - t_adb < 420:
+while not UPD and not KILL and time.time() - t_adb < 420:
     s = sample()
     if s["bc"] == "1":
         t_bc = time.time(); break
@@ -580,7 +621,7 @@ TIMES["reboot_to_boot_completed_s"] = round(t_bc - t_reboot, 1)
 adb("input keyevent KEYCODE_WAKEUP"); adb("wm dismiss-keyguard")
 exempt_client()
 probe_mid = False
-while time.time() - t_bc < A.window:
+while not KILL and time.time() - t_bc < A.window:
     s = sample()
     if s["vpn"] and t_vpn is None:
         t_vpn = s["t"]; log(f"VPN up {t_vpn - t_bc:.1f} s after boot_completed: {s}")
@@ -687,7 +728,7 @@ if src and not starter:
     starter = f"source={src}"
 if t_vpn:
     if src:  # FIX7 and later: the client logs who started it
-        path = {"boot": "BootReceiver (FGS)", "update": "update receiver", "always-on": "Always-on", "sticky": "sticky restart"}.get(src, src)
+        path = {"boot": "BootReceiver (FGS)", "update": "update receiver", "always-on": "Always-on", "sticky": "sticky restart", "user": "user (UI)"}.get(src, src)
     elif boot_start:
         path = "Worker" if worker_ev else "BootReceiver"
         if aon_t and ts(boot_start[0]) and aon_t < ts(boot_start[0]):

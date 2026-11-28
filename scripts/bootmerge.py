@@ -4,7 +4,7 @@ import glob, json, os, sys
 
 AV = {"26": "8.0", "27": "8.1", "28": "9", "29": "10", "30": "11", "31": "12", "32": "12L", "33": "13", "34": "14", "35": "15",
       "36": "16", "37": "17", "37.0": "17"}
-SC = {"A": "start-on-boot", "B": "always-on", "C": "both", "D": "always-on+lockdown", "E": "both+lockdown", "F": "start-on-boot+battery exempt", "U": "update (install -r), no reboot"}
+SC = {"A": "start-on-boot", "B": "always-on", "C": "both", "D": "always-on+lockdown", "E": "both+lockdown", "F": "start-on-boot+battery exempt", "U": "update (install -r), no reboot", "K": "kill -9 x4, no reboot"}
 rows = []
 for f in sorted(glob.glob(os.path.join(sys.argv[1], "**", "summary.json"), recursive=True)):
     try:
@@ -21,6 +21,11 @@ def cell(r):
         return "-"
     if r.get("status") != "ok":
         return f"ERR {r.get('status', '')[:40]}"
+    if r.get("scenario") == "K":
+        ks = r.get("kills", [])
+        v = "back after kill " + ", ".join(f"#{k['kill']}: {k['vpn_back_s']}s" if k.get("vpn_back_s") is not None else f"#{k['kill']}: no" for k in ks)
+        c = " CRASH" if r.get("crash") else ""
+        return v + (f" via {r['path']}" if r.get("vpn_up") else "") + c
     v = f"VPN {r['vpn_up_after_boot_completed_s']}s" if r.get("vpn_up") else "no VPN"
     if r.get("vpn_up") and not r.get("vpn_at_end"):
         v += " (gone at end)"
