@@ -604,10 +604,11 @@ with open(os.path.join(OUT, "athena.txt"), "w") as fa:
             fa.write(l + "\n")
 
 PAT = {
+    "am_crash": r"am_crash.*com\.kin\.athena",
     "unhandled_vpnservice": r"Unhandled action: android\.net\.VpnService",
     "boot_debug": r"\[Boot\]",
     "boot_info": r"Scheduled boot services via WorkManager|VPN permission not granted|Failed to load settings (on boot|for boot start)|Error in boot start worker|Network speed monitor started on boot",
-    "workmanager": r"WM-\S+\s*:.*(BootStartWorker|Worker result|boot_start_work)|BootStartWorker",
+    "workmanager": r"BootStartWorker|boot_start_work",
     "bg_start": r"ForegroundServiceStartNotAllowed|BackgroundServiceStartNotAllowed|Background start not allowed|Not allowed to start service|app is in background",
     "vpn_start": r"\[Vpn\] (Client onStartCommand|VpnManager\.start|Client starting|Starting the server)|\[Fw\] startFirewall",
     "always_on_sys": r" [VDIWEF] (Vpn|VpnManagerService|LockdownVpnTracker)\s*:|[Aa]lways.?[Oo]n.*[Aa]thena|[Aa]thena.*[Aa]lways.?[Oo]n",
@@ -632,7 +633,9 @@ crashed = bool(athena_crashes)
 exc = []
 for b in athena_crashes:
     m = next((re.sub(r"^.*AndroidRuntime\s*:\s*", "", x) for x in b if re.search(r"Exception|Error", x) and "FATAL" not in x), "")
-    exc.append(m[:300])
+    th_ = re.sub(r"^.*FATAL EXCEPTION:\s*", "", b[0]).strip()
+    fr = next((re.sub(r"^.*AndroidRuntime\s*:\s*", "", x).strip() for x in b if re.search(r"\bat com\.kin\.", x)), "")
+    exc.append(f"{m[:240]} [thread {th_}; {fr[:140]}]")
 
 
 def first_t(k, p=None):
@@ -642,25 +645,22 @@ def first_t(k, p=None):
     return None
 
 
-starter = None
-for l in EVD["vpn_start"]:
-    m = re.search(r"VpnManager\.start by (\S+)", l)
-    if m:
-        starter = m.group(1); break
 recv_t = first_t("boot_debug", r"Received android\.intent\.action\.BOOT_COMPLETED")
 worker_t = first_t("boot_debug", r"BootStartWorker id=") or first_t("workmanager")
 aon_t = first_t("unhandled_vpnservice") or first_t("vpn_start", r"action=android\.net\.VpnService")
+worker_ev = bool(worker_t)
+boot_start = [l for l in EVD["boot_debug"] if "Starting the VPN" in l]
+own_start = [l for l in EVD["vpn_start"] if "onStartCommand action=com.kin.athena.START_VPN" in l]
+starter = boot_start[0].split("[Boot]", 1)[1].strip() if boot_start else None
 if t_vpn:
-    if starter and re.search(r"BootStartWorker", starter):
-        path = "Worker"
-    elif starter and re.search(r"BootReceiver", starter):
-        path = "BootReceiver"
-    elif starter:
-        path = f"other ({starter})"
-    elif EVD["boot_debug"] or EVD["vpn_start"]:
+    if boot_start:
+        path = "Worker" if worker_ev else "BootReceiver"
+    elif SOB and not EVD["boot_debug"]:  # release build: no debug lines
+        path = ("Worker" if worker_ev else "BootReceiver") + " (inferred)"
+    elif aon_t and not own_start:
+        path = "Always-on"
+    else:
         path = "unknown"
-    else:  # release build: no debug lines
-        path = ("Worker?" if EVD["boot_info"] and SDK >= 35 else "BootReceiver?") if SOB else "Always-on?"
 else:
     path = "none"
 rel = lambda t: round(t - t_bc, 1) if t else None
